@@ -184,11 +184,11 @@ def pre_session_wizard(defaults: SessionConfig) -> SessionConfig:
 
     # Levels
     levels_str = console.input(
-        f"Difficulty levels to include 1–6 (default: {defaults.num_levels}): "
+        f"Difficulty levels to include 3–6 (default: {defaults.num_levels}): "
     ).strip()
     try:
         num_levels = int(levels_str) if levels_str else defaults.num_levels
-        num_levels = max(1, min(6, num_levels))
+        num_levels = max(3, min(6, num_levels))
     except ValueError:
         num_levels = defaults.num_levels
 

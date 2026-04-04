@@ -19,6 +19,13 @@ class ProviderConfig:
     temperature: float   # Default temperature for this model
     is_free: bool        # Whether this model is on the free tier
 
+QWEN_36_PLUS = ProviderConfig(
+    model_id="qwen/qwen3.6-plus:free",
+    display_name="Qwen 3.6 Plus (Free)",
+    max_tokens=8192,
+    temperature=0.3,
+    is_free=True,
+)
 
 # Primary provider — Kimi-K2 (strong reasoning, generous free tier)
 KIMI_K2 = ProviderConfig(
@@ -49,10 +56,10 @@ GEMINI_FLASH = ProviderConfig(
 
 # All providers indexed by model_id for quick lookup
 ALL_PROVIDERS: dict[str, ProviderConfig] = {
-    p.model_id: p for p in [KIMI_K2, ARCEE_BLAZE, GEMINI_FLASH]
+    p.model_id: p for p in [QWEN_36_PLUS, KIMI_K2, ARCEE_BLAZE, GEMINI_FLASH]
 }
 
-DEFAULT_PROVIDER = KIMI_K2
+DEFAULT_PROVIDER = QWEN_36_PLUS
 
 
 def get_provider(model_id: str) -> ProviderConfig:

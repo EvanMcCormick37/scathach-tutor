@@ -158,6 +158,54 @@ def get_root_questions(conn: sqlite3.Connection, topic_id: int) -> list[Question
     return [_row_to_question(r) for r in rows]
 
 
+def get_prior_root_questions(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    limit_per_level: int = 25,
+) -> list[Question]:
+    """
+    Return up to `limit_per_level` previously asked root questions per difficulty
+    level for the given topic, ordered most-recent-first within each level.
+
+    Used during question generation to prevent the LLM from repeating questions
+    across sessions.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY difficulty ORDER BY created_at DESC, id DESC
+                   ) AS rn
+            FROM questions
+            WHERE topic_id = ? AND is_root = 1
+        )
+        WHERE rn <= ?
+        ORDER BY difficulty ASC, created_at DESC
+        """,
+        (topic_id, limit_per_level),
+    ).fetchall()
+    return [_row_to_question(r) for r in rows]
+
+
+def rename_topic(
+    conn: sqlite3.Connection,
+    old_name: str,
+    new_name: str,
+) -> Optional[Topic]:
+    """
+    Rename a topic. Returns the updated Topic, or None if old_name is not found.
+    Raises sqlite3.IntegrityError if new_name is already taken.
+    """
+    conn.execute(
+        "UPDATE topics SET name = ? WHERE name = ?",
+        (new_name, old_name),
+    )
+    conn.commit()
+    return get_topic_by_name(conn, new_name)
+
+
 def _row_to_question(row: sqlite3.Row) -> Question:
     return Question(
         id=row["id"],

@@ -62,14 +62,14 @@ def _score_json(score: int = 8, diagnosis: str = "Good.") -> str:
 
 def _always_pass_provider():
     """Returns a fixed answer instantly (no timing)."""
-    async def provider(question: Question) -> tuple[str, Optional[float]]:
+    async def provider(question: Question, timed: bool) -> tuple[str, Optional[float]]:
         return "my answer", None
     return provider
 
 
 def _always_fail_provider():
     """Returns a low-quality answer (will score below threshold)."""
-    async def provider(question: Question) -> tuple[str, Optional[float]]:
+    async def provider(question: Question, timed: bool) -> tuple[str, Optional[float]]:
         return "I don't know.", None
     return provider
 

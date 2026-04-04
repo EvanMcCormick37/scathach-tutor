@@ -10,7 +10,12 @@ via git history.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from scathach.core.question import DifficultyLevel
+
+if TYPE_CHECKING:
+    from scathach.db.models import Question
 
 # ---------------------------------------------------------------------------
 # Prompt versions — bump these when you change the corresponding prompt body
@@ -77,13 +82,50 @@ Document content:
 ---
 {document_content}
 ---
-
+{prior_section}
 Generate 6 questions (one per difficulty level 1–6) with their ideal answers."""
 
+_PRIOR_QUESTIONS_SECTION = """\
 
-def render_question_generation_prompt(document_content: str) -> tuple[str, str]:
+Previously asked questions about this document — do NOT repeat or closely \
+paraphrase any of the following:
+{per_level_blocks}
+"""
+
+_PRIOR_LEVEL_BLOCK = """\
+[Level {level} — {label}]
+{bodies}"""
+
+
+def _format_prior_questions(prior_questions: "list[Question]") -> str:
+    """Format prior questions into a deduplication block grouped by difficulty."""
+    from collections import defaultdict
+    by_level: dict[int, list[str]] = defaultdict(list)
+    for q in prior_questions:
+        by_level[q.difficulty].append(q.body)
+
+    blocks: list[str] = []
+    for level in sorted(by_level):
+        dl = DifficultyLevel.from_int(level)
+        bodies = "\n".join(f"- {body}" for body in by_level[level])
+        blocks.append(_PRIOR_LEVEL_BLOCK.format(
+            level=level, label=dl.label, bodies=bodies
+        ))
+    return _PRIOR_QUESTIONS_SECTION.format(per_level_blocks="\n".join(blocks))
+
+
+def render_question_generation_prompt(
+    document_content: str,
+    prior_questions: "list[Question] | None" = None,
+) -> tuple[str, str]:
     """
     Render the question generation prompts.
+
+    Args:
+        document_content:  The document text to generate questions from.
+        prior_questions:   Previously asked root questions for this topic; if
+                           provided they are embedded in the prompt so the LLM
+                           avoids repeating them. Up to 25 per level recommended.
 
     Returns:
         (system_prompt, user_prompt)
@@ -92,7 +134,11 @@ def render_question_generation_prompt(document_content: str) -> tuple[str, str]:
         rubric=_DIFFICULTY_RUBRIC,
         few_shot=_FEW_SHOT_EXAMPLES,
     )
-    user = _QUESTION_GENERATION_USER.format(document_content=document_content)
+    prior_section = _format_prior_questions(prior_questions) if prior_questions else ""
+    user = _QUESTION_GENERATION_USER.format(
+        document_content=document_content,
+        prior_section=prior_section,
+    )
     return system, user
 
 

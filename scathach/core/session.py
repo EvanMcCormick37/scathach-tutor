@@ -18,6 +18,8 @@ from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scoring import ScoringError, score_answer
 from scathach.db.models import Attempt, Question
 from scathach.db.repository import (
+    get_latest_attempt,
+    get_prior_root_questions,
     get_topic_by_id,
     insert_question,
     record_attempt,
@@ -54,7 +56,11 @@ async def generate_root_questions(
     if topic is None:
         raise GenerationError(f"Topic id={topic_id} not found.")
 
-    system_prompt, user_prompt = render_question_generation_prompt(topic.content)
+    prior_questions = get_prior_root_questions(conn, topic_id, limit_per_level=25)
+    system_prompt, user_prompt = render_question_generation_prompt(
+        topic.content,
+        prior_questions=prior_questions or None,
+    )
 
     raw_response: str | None = None
     parsed: list[dict] | None = None
@@ -158,7 +164,7 @@ class SessionAborted(SessionEvent):
 
 
 # Callback types
-AnswerProvider = Callable[[Question], Awaitable[tuple[str, Optional[float]]]]
+AnswerProvider = Callable[[Question, bool], Awaitable[tuple[str, Optional[float]]]]
 EventHandler = Callable[[SessionEvent], Awaitable[None]]
 
 
@@ -250,9 +256,20 @@ class SessionRunner:
                 depth=depth,
             ))
 
+            # --- Determine effective timing for this attempt ---
+            # Only time if: session is timed, question is not a Hydra sub-question,
+            # and the question has never been attempted before.
+            is_hydra = question.parent_id is not None
+            has_prior_attempt = get_latest_attempt(self.conn, question.id) is not None
+            effective_timed = (
+                self.config.timing == TimingMode.TIMED
+                and not is_hydra
+                and not has_prior_attempt
+            )
+
             # --- Await answer ---
             self.state = SessionState.AWAITING_ANSWER
-            answer_text, time_taken_s = await self.answer_provider(question)
+            answer_text, time_taken_s = await self.answer_provider(question, effective_timed)
 
             # --- Score ---
             self.state = SessionState.SCORING
@@ -264,7 +281,7 @@ class SessionRunner:
                     session_id=self.session_id,
                     answer_text=answer_text,
                     time_taken_s=time_taken_s,
-                    timed=self.config.timing == TimingMode.TIMED,
+                    timed=effective_timed,
                     threshold=self.config.threshold,
                 )
             except ScoringError as exc:
@@ -288,13 +305,14 @@ class SessionRunner:
                 current_group.pop(0)
                 if depth == 0:
                     self._cleared.append(question)
-                # Write to review queue
-                upsert_review_entry(self.conn, ReviewEntry(
-                    question_id=question.id,
-                    queue=self.config.timing.value,
-                    last_score=attempt.final_score,
-                    state="learning",
-                ))
+                # Write to both queues so both review and super-review see the result
+                for queue_name in ("timed", "untimed"):
+                    upsert_review_entry(self.conn, ReviewEntry(
+                        question_id=question.id,
+                        queue=queue_name,
+                        last_score=attempt.final_score,
+                        state="learning",
+                    ))
             else:
                 # Failed — spawn sub-questions and push them onto the stack
                 self.state = SessionState.HYDRA_SPAWNING

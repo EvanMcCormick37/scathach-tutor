@@ -44,6 +44,7 @@ class DifficultyMeta:
     label: str           # human-readable label
     time_limit_s: int    # base time limit t in seconds (0 = untimed/no limit)
     answer_descriptor: str  # expected answer format
+    document_coverage: str # How much of the document's meaning the question covers
 
 
 class DifficultyLevel(Enum):
@@ -54,12 +55,12 @@ class DifficultyLevel(Enum):
     The integer value (1–6) is used for DB storage.
     """
 
-    EASY_SHORT   = DifficultyMeta(1, "Easy short answer",  30,   "Single word or phrase")
-    HARD_SHORT   = DifficultyMeta(2, "Hard short answer",  60,   "One to two sentences")
-    EASY_PARA    = DifficultyMeta(3, "Easy paragraph",     300,  "One paragraph")
-    HARD_PARA    = DifficultyMeta(4, "Hard paragraph",     600,  "One to two paragraphs")
-    EASY_LONG    = DifficultyMeta(5, "Easy long answer",   900,  "Multiple paragraphs")
-    HARD_LONG    = DifficultyMeta(6, "Hard long answer",   1800, "Comprehensive essay")
+    EASY_SHORT   = DifficultyMeta(1, "short answer",  30,   "Single word or phrase",    "A narrow fact or definition")
+    HARD_SHORT   = DifficultyMeta(2, "short answer",  60,   "One to two sentences",     "A key concept or relationship")
+    EASY_PARA    = DifficultyMeta(3, "paragraph",     300,  "One paragraph",            "A single section or theme")
+    HARD_PARA    = DifficultyMeta(4, "paragraph",     600,  "One to two paragraphs",    "Multiple related concepts. May require general outside knowledge.")
+    EASY_LONG    = DifficultyMeta(5, "long answer",   900,  "Multiple paragraphs",      "A major argument or framework. Requires showing some degree of outside domain knowledge.")
+    HARD_LONG    = DifficultyMeta(6, "long answer",   1800, "Comprehensive essay",      "Integrates the whole document. Requires deep domain expertise.")
 
     # Convenience accessors so call-sites don't have to dig into .value
     @property

@@ -19,7 +19,7 @@ from scathach import __version__
 from scathach.config import settings
 from scathach.core.question import TimingMode
 from scathach.core.session import SessionConfig, SessionRunner
-from scathach.db.repository import get_topic_by_name, list_topics
+from scathach.db.repository import get_topic_by_name, list_topics, rename_topic
 from scathach.db.schema import open_db
 from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_text
 from scathach.llm.client import make_client
@@ -100,11 +100,14 @@ _BANNER = """
   └─────────────────────────────────────────┘[/bold cyan]
 
 Quick start:
-  [bold]scathach ingest[/bold] [dim]<file>[/dim]           Ingest a document
+  [bold]scathach ingest[/bold]                  Ingest all new docs from [dim]./docs/[/dim]
+  [bold]scathach ingest[/bold] [dim]<file>[/dim]           Ingest a specific document
   [bold]scathach session[/bold] [dim]<topic>[/dim]         Start a learning session
   [bold]scathach review[/bold]                  Review due level 1–2 questions
   [bold]scathach super-review[/bold]            Review due level 3–6 questions
   [bold]scathach stats[/bold]                   View progress dashboard
+
+Tip: drop documents into [bold]./docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
 """
 
 
@@ -135,20 +138,33 @@ def main(
 # ---------------------------------------------------------------------------
 
 
+_DOCS_DIR = Path("docs")
+_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".txt", ".md", ".markdown", ".rst"}
+
+
 @app.command()
 def ingest(
     path: Optional[str] = typer.Argument(
         None,
-        help="Path to a document (PDF, DOCX, PPTX, TXT, MD) to ingest.",
+        help="Path to a document (PDF, DOCX, PPTX, TXT, MD) to ingest. "
+             "If omitted, all new documents in ./docs/ are ingested automatically.",
     ),
     name: Optional[str] = typer.Option(
-        None, "--name", "-n", help="Custom topic name (defaults to filename)."
+        None, "--name", "-n", help="Custom topic name (defaults to filename). Only used with a file path argument."
     ),
     paste: bool = typer.Option(
         False, "--paste", "-p", help="Paste raw text instead of providing a file path."
     ),
 ) -> None:
-    """Ingest a document or pasted text and store it as a topic."""
+    """Ingest documents into scathach.
+
+    With no arguments, scans [bold]./docs/[/] for any files not yet ingested and
+    imports them all. Drop files into that folder and run [bold]scathach ingest[/]
+    to pick them up.
+
+    Pass a specific file path to ingest just that document, or use [bold]--paste[/]
+    to type/paste raw text directly.
+    """
     conn = open_db(settings.db_path)
     try:
         if paste:
@@ -158,20 +174,84 @@ def ingest(
             text = sys.stdin.read()
             topic = ingest_text(conn, text, topic_name=name)
             console.print(f"[green]Ingested topic '{topic.name}' (id={topic.id}) from pasted text.[/]")
+
         elif path is not None:
             with console.status(f"[cyan]Ingesting {Path(path).name}…[/]"):
                 topic = ingest_file(conn, path, topic_name=name)
             console.print(
                 f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}).[/]"
             )
+
         else:
-            console.print("[red]Provide a file path or use --paste.[/]")
-            raise typer.Exit(code=1)
+            # Auto-scan ./docs/ for new documents
+            _ingest_docs_folder(conn)
+
     except IngestionError as exc:
         console.print(f"[red]Ingestion failed:[/] {exc}")
         raise typer.Exit(code=1)
     finally:
         conn.close()
+
+
+def _ingest_docs_folder(conn) -> None:
+    """Scan ./docs/ for supported files not yet ingested and import them."""
+    if not _DOCS_DIR.exists():
+        console.print(
+            f"[yellow]Docs folder [bold]{_DOCS_DIR.resolve()}[/bold] not found.[/yellow]\n"
+            "Create a [bold]docs/[/bold] folder in your working directory and drop "
+            "documents into it, then run [bold]scathach ingest[/bold] again."
+        )
+        return
+
+    candidates = sorted(
+        p for p in _DOCS_DIR.iterdir()
+        if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTENSIONS
+    )
+
+    if not candidates:
+        console.print(
+            f"[yellow]No supported documents found in [bold]{_DOCS_DIR}[/bold].[/yellow]\n"
+            f"Supported formats: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
+        )
+        return
+
+    # Determine which files are already ingested by comparing resolved source paths
+    already_ingested: set[str] = {
+        row["source_path"]
+        for row in conn.execute("SELECT source_path FROM topics WHERE source_path IS NOT NULL").fetchall()
+    }
+
+    new_files = [p for p in candidates if str(p.resolve()) not in already_ingested]
+    skipped = len(candidates) - len(new_files)
+
+    if not new_files:
+        console.print(
+            f"[green]All {len(candidates)} document(s) in [bold]{_DOCS_DIR}[/bold] "
+            "are already ingested.[/green]"
+        )
+        return
+
+    if skipped:
+        console.print(f"[dim]Skipping {skipped} already-ingested file(s).[/dim]")
+
+    ingested_count = 0
+    failed_count = 0
+    for file_path in new_files:
+        try:
+            with console.status(f"[cyan]Ingesting {file_path.name}…[/]"):
+                topic = ingest_file(conn, file_path)
+            console.print(
+                f"  [green]✓[/green] [bold]{topic.name}[/bold] (id={topic.id})"
+            )
+            ingested_count += 1
+        except IngestionError as exc:
+            console.print(f"  [red]✗[/red] {file_path.name}: {exc}")
+            failed_count += 1
+
+    console.print(
+        f"\n[bold]Done.[/bold] Ingested {ingested_count} new topic(s)"
+        + (f", {failed_count} failed." if failed_count else ".")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +300,42 @@ def topics() -> None:
             )
 
         console.print(table)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# rename
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def rename(
+    old_name: str = typer.Argument(..., help="Current topic name."),
+    new_name: str = typer.Argument(..., help="New topic name."),
+) -> None:
+    """Rename a topic."""
+    conn = open_db(settings.db_path)
+    try:
+        topic = get_topic_by_name(conn, old_name)
+        if topic is None:
+            console.print(
+                f"[red]Topic '{old_name}' not found.[/red] "
+                "Run [bold]scathach topics[/bold] to see available topics."
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            updated = rename_topic(conn, old_name, new_name)
+        except Exception:
+            console.print(
+                f"[red]Could not rename:[/red] a topic named '[bold]{new_name}[/bold]' already exists."
+            )
+            raise typer.Exit(code=1)
+
+        console.print(
+            f"[green]Renamed '[bold]{old_name}[/bold]' → '[bold]{updated.name}[/bold]'.[/green]"
+        )
     finally:
         conn.close()
 

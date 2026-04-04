@@ -44,6 +44,25 @@ def test_question_generation_prompt_structure() -> None:
     assert "Gravity pulls objects together." in user_p
 
 
+def test_question_generation_prompt_no_prior_questions_by_default() -> None:
+    _, user_p = render_question_generation_prompt("Some content.")
+    assert "Previously asked" not in user_p
+
+
+def test_question_generation_prompt_embeds_prior_questions() -> None:
+    from scathach.db.models import Question
+    prior = [
+        Question(topic_id=1, difficulty=1, body="What is gravity?", ideal_answer="A force.", is_root=True),
+        Question(topic_id=1, difficulty=2, body="State Newton's first law.", ideal_answer="...", is_root=True),
+    ]
+    _, user_p = render_question_generation_prompt("Some content.", prior_questions=prior)
+    assert "Previously asked" in user_p
+    assert "What is gravity?" in user_p
+    assert "State Newton's first law." in user_p
+    assert "Level 1" in user_p
+    assert "Level 2" in user_p
+
+
 def test_question_generation_prompt_all_levels_in_rubric() -> None:
     sys_p, _ = render_question_generation_prompt("content")
     for level in range(1, 7):
@@ -169,10 +188,11 @@ def test_scoring_prompt_no_ideal_answer() -> None:
 
 
 def test_scoring_prompt_includes_difficulty_label() -> None:
+    from scathach.core.question import DifficultyLevel
     sys_p, _ = render_scoring_prompt(
         question_body="Q", difficulty=1, answer_text="A"
     )
-    assert "Easy short answer" in sys_p
+    assert DifficultyLevel.from_int(1).label in sys_p
 
 
 def test_scoring_prompt_json_format_specified() -> None:

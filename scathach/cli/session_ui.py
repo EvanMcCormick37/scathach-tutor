@@ -308,8 +308,8 @@ def _render_complete(event: SessionComplete) -> None:
 
 def make_answer_provider(timing: TimingMode):
     """Return the appropriate answer-collection coroutine for the given timing mode."""
-    async def provider(question: Question) -> tuple[str, Optional[float]]:
-        if timing == TimingMode.TIMED:
+    async def provider(question: Question, timed: bool) -> tuple[str, Optional[float]]:
+        if timed:
             return await _get_answer_timed(question)
         return await _get_answer_untimed(question)
     return provider

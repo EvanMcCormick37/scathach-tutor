@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS untimed_review_queue (
     difficulty_fsrs     REAL DEFAULT 0.3,
     state               TEXT DEFAULT 'new'
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id              TEXT PRIMARY KEY,
+    topic_id        INTEGER NOT NULL REFERENCES topics(id),
+    status          TEXT NOT NULL DEFAULT 'active',
+    timing          TEXT NOT NULL DEFAULT 'untimed',
+    threshold       INTEGER NOT NULL DEFAULT 7,
+    num_levels      INTEGER NOT NULL DEFAULT 6,
+    question_stack  TEXT,
+    cleared_ids     TEXT,
+    root_ids        TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

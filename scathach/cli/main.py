@@ -19,7 +19,14 @@ from scathach import __version__
 from scathach.config import settings
 from scathach.core.question import TimingMode
 from scathach.core.session import SessionConfig, SessionRunner
-from scathach.db.repository import get_topic_by_name, list_topics, rename_topic
+from scathach.db.repository import (
+    get_session_record,
+    get_topic_by_id,
+    get_topic_by_name,
+    list_active_sessions,
+    list_topics,
+    rename_topic,
+)
 from scathach.db.schema import open_db
 from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_text
 from scathach.llm.client import make_client
@@ -347,7 +354,7 @@ def rename(
 
 @app.command()
 def session(
-    topic: str = typer.Argument(..., help="Topic name to start a session for."),
+    topic: Optional[str] = typer.Argument(None, help="Topic name to start a session for."),
     timed: Optional[bool] = typer.Option(
         None, "--timed/--untimed", help="Override the default timing mode."
     ),
@@ -357,21 +364,111 @@ def session(
     levels: Optional[int] = typer.Option(
         None, "--levels", "-l", min=1, max=6, help="Number of difficulty levels to include (1–6)."
     ),
-    resume: bool = typer.Option(False, "--resume", "-r", help="Resume an interrupted session."),
+    resume: Optional[str] = typer.Option(
+        None, "--resume", "-r", help="Resume an interrupted session by its ID."
+    ),
+    list_sessions: bool = typer.Option(
+        False, "--list", help="List all unfinished sessions."
+    ),
     wizard: bool = typer.Option(True, "--wizard/--no-wizard", help="Run the pre-session setup wizard."),
     open_doc: Optional[bool] = typer.Option(
         None, "--open-doc/--no-open-doc",
         help="Open source document before starting (overrides config default).",
     ),
 ) -> None:
-    """Start an interactive learning session for a topic."""
+    """Start or resume an interactive learning session."""
     import asyncio
     from scathach.cli.session_ui import handle_event, make_answer_provider, pre_session_wizard
 
-    _require_api_key()
-
     conn = open_db(settings.db_path)
     try:
+        # ---- List unfinished sessions ----
+        if list_sessions:
+            active = list_active_sessions(conn)
+            if not active:
+                console.print("[dim]No unfinished sessions.[/dim]")
+                return
+            table = Table(title="Unfinished Sessions", show_lines=True)
+            table.add_column("Session ID", style="cyan", no_wrap=True)
+            table.add_column("Topic", style="bold")
+            table.add_column("Timing")
+            table.add_column("Started")
+            table.add_column("Questions Remaining", justify="right")
+            import json as _json
+            for rec in active:
+                topic_obj = get_topic_by_id(conn, rec.topic_id)
+                topic_name = topic_obj.name if topic_obj else f"id={rec.topic_id}"
+                remaining = 0
+                if rec.question_stack:
+                    try:
+                        frames = _json.loads(rec.question_stack)
+                        remaining = sum(len(f["question_ids"]) for f in frames)
+                    except Exception:
+                        pass
+                table.add_row(
+                    rec.session_id,
+                    topic_name,
+                    rec.timing,
+                    str(rec.created_at)[:16] if rec.created_at else "—",
+                    str(remaining),
+                )
+            console.print(table)
+            return
+
+        # ---- Resume existing session ----
+        if resume is not None:
+            _require_api_key()
+            rec = get_session_record(conn, resume)
+            if rec is None:
+                console.print(f"[red]Session '{resume}' not found.[/red]")
+                raise typer.Exit(code=1)
+            if rec.status != "active":
+                console.print(f"[yellow]Session '{resume}' is already complete.[/yellow]")
+                raise typer.Exit(code=1)
+            if not rec.question_stack:
+                console.print(f"[red]Session '{resume}' has no saved state to resume.[/red]")
+                raise typer.Exit(code=1)
+
+            topic_obj = get_topic_by_id(conn, rec.topic_id)
+            should_open = open_doc if open_doc is not None else settings.open_doc_on_session
+            _maybe_open_doc(topic_obj.source_path if topic_obj else None, should_open)
+
+            from scathach.core.question import TimingMode as _TM
+            timing_mode = _TM.TIMED if rec.timing == "timed" else _TM.UNTIMED
+            config = SessionConfig(
+                topic_id=rec.topic_id,
+                timing=timing_mode,
+                threshold=rec.threshold,
+                num_levels=rec.num_levels,
+            )
+            llm_client = make_client(
+                api_key=settings.openrouter_api_key,
+                model=settings.model,
+                base_url=settings.openrouter_base_url,
+            )
+            runner = SessionRunner(
+                conn=conn,
+                client=llm_client,
+                config=config,
+                answer_provider=make_answer_provider(config.timing),
+                event_handler=handle_event,
+                restored_record=rec,
+            )
+            asyncio.run(runner.run())
+            return
+
+        # ---- Start new session ----
+        if topic is None:
+            console.print(
+                "[red]Provide a topic name, or use --list / --resume.[/red]\n"
+                "  scathach session [bold]<topic>[/bold]\n"
+                "  scathach session [bold]--list[/bold]\n"
+                "  scathach session [bold]--resume <session_id>[/bold]"
+            )
+            raise typer.Exit(code=1)
+
+        _require_api_key()
+
         topic_obj = get_topic_by_name(conn, topic)
         if topic_obj is None:
             console.print(

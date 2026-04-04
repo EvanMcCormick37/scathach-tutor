@@ -11,7 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Literal, Optional
 
-from scathach.db.models import Attempt, Question, ReviewEntry, Topic
+from scathach.db.models import Attempt, Question, ReviewEntry, SessionRecord, Topic
 
 
 # ---------------------------------------------------------------------------
@@ -421,4 +421,106 @@ def _row_to_review_entry(
         stability=row["stability"],
         difficulty_fsrs=row["difficulty_fsrs"],
         state=row["state"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+
+def create_session_record(conn: sqlite3.Connection, record: SessionRecord) -> SessionRecord:
+    """Insert a new session row and return it."""
+    conn.execute(
+        """
+        INSERT INTO sessions
+            (id, topic_id, status, timing, threshold, num_levels,
+             question_stack, cleared_ids, root_ids)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.session_id,
+            record.topic_id,
+            record.status,
+            record.timing,
+            record.threshold,
+            record.num_levels,
+            record.question_stack,
+            record.cleared_ids,
+            record.root_ids,
+        ),
+    )
+    conn.commit()
+    return record
+
+
+def update_session_state(
+    conn: sqlite3.Connection,
+    session_id: str,
+    question_stack: str,
+    cleared_ids: str,
+) -> None:
+    """Persist current question stack and cleared list for an active session."""
+    conn.execute(
+        """
+        UPDATE sessions
+        SET question_stack = ?, cleared_ids = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (question_stack, cleared_ids, session_id),
+    )
+    conn.commit()
+
+
+def complete_session(conn: sqlite3.Connection, session_id: str) -> None:
+    """Mark a session as complete."""
+    conn.execute(
+        "UPDATE sessions SET status = 'complete', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (session_id,),
+    )
+    conn.commit()
+
+
+def get_session_record(
+    conn: sqlite3.Connection, session_id: str
+) -> Optional[SessionRecord]:
+    """Fetch a session record by ID."""
+    row = conn.execute(
+        """
+        SELECT id, topic_id, status, timing, threshold, num_levels,
+               question_stack, cleared_ids, root_ids, created_at, updated_at
+        FROM sessions WHERE id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_session(row)
+
+
+def list_active_sessions(conn: sqlite3.Connection) -> list[SessionRecord]:
+    """Return all sessions with status='active', newest first."""
+    rows = conn.execute(
+        """
+        SELECT id, topic_id, status, timing, threshold, num_levels,
+               question_stack, cleared_ids, root_ids, created_at, updated_at
+        FROM sessions WHERE status = 'active' ORDER BY created_at DESC
+        """,
+    ).fetchall()
+    return [_row_to_session(r) for r in rows]
+
+
+def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+    return SessionRecord(
+        session_id=row["id"],
+        topic_id=row["topic_id"],
+        status=row["status"],
+        timing=row["timing"],
+        threshold=row["threshold"],
+        num_levels=row["num_levels"],
+        question_stack=row["question_stack"],
+        cleared_ids=row["cleared_ids"],
+        root_ids=row["root_ids"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

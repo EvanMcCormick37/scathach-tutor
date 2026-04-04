@@ -47,6 +47,21 @@ class Attempt:
 
 
 @dataclass
+class SessionRecord:
+    session_id: str
+    topic_id: int
+    status: str = "active"   # 'active' | 'complete'
+    timing: str = "untimed"  # 'timed' | 'untimed'
+    threshold: int = 7
+    num_levels: int = 6
+    question_stack: Optional[str] = None   # JSON
+    cleared_ids: Optional[str] = None      # JSON list of ints
+    root_ids: Optional[str] = None         # JSON list of ints
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
 class ReviewEntry:
     question_id: int
     queue: Literal["timed", "untimed"]

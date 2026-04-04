@@ -100,20 +100,19 @@ class DualZoneTimer:
 
 
 async def _get_answer_untimed(question: Question) -> tuple[str, Optional[float]]:
-    """Collect a multiline answer without a timer. Escape+Enter to submit."""
+    """Collect a multiline answer without a timer. Shift+Enter to submit."""
     kb = KeyBindings()
 
-    @kb.add("escape", "enter")
+    @kb.add("s-enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
 
     session: PromptSession = PromptSession(key_bindings=kb)
     console.print(
-        "[dim]Type your answer below. Press [bold]Escape then Enter[/bold] to submit.[/dim]"
+        "[dim]Type your answer below. Press [bold]Shift+Enter[/bold] to submit.[/dim]"
     )
     answer = await session.prompt_async("> ", multiline=True)
     return answer.strip(), None
-
 
 async def _get_answer_timed(question: Question) -> tuple[str, float]:
     """Collect an answer under the dual-zone timer."""
@@ -122,39 +121,71 @@ async def _get_answer_timed(question: Question) -> tuple[str, float]:
     timer.start()
 
     console.print(
-        f"[dim]Type your answer below. Press [bold]Escape then Enter[/bold] to submit. "
+        f"[dim]Type your answer below. Press [bold]Shift+Enter[/bold] to submit. "
         f"Time limit: {dl.time_limit_s}s[/dim]"
     )
 
     kb = KeyBindings()
 
-    @kb.add("escape", "enter")
+    @kb.add("s-enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
+    
+    _BAR_WIDTH = 30
 
-    session: PromptSession = PromptSession(key_bindings=kb)
+    def get_bottom_toolbar():
+        """Dynamic toolbar evaluated every refresh_interval."""
+        e = timer.elapsed()
+        zone = timer.zone()
 
-    # Run timer display and input collection concurrently
-    answer_holder: list[str] = [""]
-
-    async def collect_input() -> None:
-        answer_holder[0] = await session.prompt_async("> ", multiline=True)
-
-    async def display_timer() -> None:
-        while not timer.is_expired():
-            console.print(timer.render_progress(), end="\r")
-            await asyncio.sleep(0.5)
-            if answer_holder[0]:  # submitted
-                break
-
-    await asyncio.gather(
-        collect_input(),
-        display_timer(),
+        if zone == TimerZone.NORMAL:
+            fraction = max(0.0, (dl.time_limit_s - e) / dl.time_limit_s)
+            filled = round(fraction * _BAR_WIDTH)
+            bar = f'<ansigreen>{"█" * filled}</ansigreen>{"░" * (_BAR_WIDTH - filled)}'
+            remaining = max(0.0, dl.time_limit_s - e)
+            return HTML(f'{bar}  <ansigreen>{remaining:.0f}s remaining</ansigreen>')
+        elif zone == TimerZone.PENALTY:
+            fraction = max(0.0, (dl.time_limit_s * 2 - e) / dl.time_limit_s)
+            filled = round(fraction * _BAR_WIDTH)
+            bar = f'<ansiyellow>{"█" * filled}</ansiyellow>{"░" * (_BAR_WIDTH - filled)}'
+            remaining = max(0.0, dl.time_limit_s * 2 - e)
+            return HTML(f'{bar}  <ansiyellow><b>⚠ Over time — score halved. {remaining:.0f}s before auto-fail</b></ansiyellow>')
+        else:
+            bar = "░" * _BAR_WIDTH
+            return HTML(f'<ansired>{bar}  ⏰ Time expired — auto-fail</ansired>')
+    
+    # refresh_interval ensures the toolbar updates twice a second,
+    # even if the user isn't actively typing.
+    session: PromptSession = PromptSession(
+        key_bindings=kb,
+        bottom_toolbar=get_bottom_toolbar,
+        refresh_interval=0.5
     )
-    console.print()  # newline after timer display
+
+    # Wrap the prompt in a task so we can forcefully close it if time expires
+    prompt_task = asyncio.create_task(session.prompt_async("> ", multiline=True))
+
+    async def enforce_timeout() -> None:
+        while not timer.is_expired():
+            if prompt_task.done():
+                return
+            await asyncio.sleep(0.5)
+        
+        # If timer expires and the user hasn't submitted, kill the prompt
+        if not prompt_task.done():
+            prompt_task.cancel()
+
+    timeout_task = asyncio.create_task(enforce_timeout())
+
+    try:
+        answer = await prompt_task
+    except asyncio.CancelledError:
+        # Re-caught from prompt_task.cancel()
+        answer = ""
+        console.print("\n[red bold]⏰ Time expired! Input closed.[/red bold]")
 
     elapsed = timer.elapsed()
-    return answer_holder[0].strip(), elapsed
+    return answer.strip(), elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +252,7 @@ async def handle_event(event: SessionEvent) -> None:
 
 def _render_question(event: QuestionPresented) -> None:
     dl = DifficultyLevel.from_int(event.question.difficulty)
-    depth_label = f"[Hydra depth {event.depth}] " if event.depth > 0 else ""
+    depth_label = f"[Hydra depth {event.depth}] Parent" if event.depth > 0 else ""
     title = (
         f"{depth_label}Question {event.index}/{event.total} — "
         f"Difficulty {_difficulty_stars(event.question.difficulty)} ({dl.label})"

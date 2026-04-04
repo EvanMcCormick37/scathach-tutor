@@ -7,6 +7,8 @@ emits events that the TUI layer (session_ui.py) responds to.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -16,13 +18,17 @@ from typing import Any, Awaitable, Callable, Optional
 from scathach.core.hydra import HydraError, spawn_subquestions
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scoring import ScoringError, score_answer
-from scathach.db.models import Attempt, Question
+from scathach.db.models import Attempt, Question, SessionRecord
 from scathach.db.repository import (
+    complete_session,
+    create_session_record,
     get_latest_attempt,
     get_prior_root_questions,
+    get_question,
     get_topic_by_id,
     insert_question,
     record_attempt,
+    update_session_state,
     upsert_review_entry,
 )
 from scathach.db.models import ReviewEntry
@@ -184,8 +190,7 @@ class SessionRunner:
     - `answer_provider`: called with a Question, returns (answer_text, time_taken_s)
     - `event_handler`: called with each SessionEvent for rendering
 
-    This allows the same SessionRunner to be driven by the TUI, tests, or any
-    other interface.
+    Pass `restored_record` to resume a previously interrupted session.
     """
 
     def __init__(
@@ -195,6 +200,7 @@ class SessionRunner:
         config: SessionConfig,
         answer_provider: AnswerProvider,
         event_handler: EventHandler,
+        restored_record: Optional[SessionRecord] = None,
     ) -> None:
         self.conn = conn
         self.client = client
@@ -202,10 +208,62 @@ class SessionRunner:
         self.answer_provider = answer_provider
         self.event_handler = event_handler
 
-        self.session_id = str(uuid.uuid4())
+        if restored_record is not None:
+            self.session_id = restored_record.session_id
+            self._restored_record = restored_record
+        else:
+            self.session_id = str(uuid.uuid4())
+            self._restored_record = None
+
         self.state = SessionState.IDLE
         self._cleared: list[Question] = []
         self._all_attempts: list[Attempt] = []
+
+    # ------------------------------------------------------------------
+    # State persistence helpers
+    # ------------------------------------------------------------------
+
+    def _serialize_stack(
+        self, question_stack: list[tuple[list[Question], Optional[Question]]]
+    ) -> str:
+        """Serialize question stack to JSON (question IDs only)."""
+        frames = []
+        for q_list, parent_q in question_stack:
+            frames.append({
+                "question_ids": [q.id for q in q_list],
+                "parent_id": parent_q.id if parent_q is not None else None,
+            })
+        return json.dumps(frames)
+
+    def _deserialize_stack(
+        self, stack_json: str
+    ) -> list[tuple[list[Question], Optional[Question]]]:
+        """Restore question stack from JSON by fetching questions from DB."""
+        frames = json.loads(stack_json)
+        result: list[tuple[list[Question], Optional[Question]]] = []
+        for frame in frames:
+            questions: list[Question] = []
+            for qid in frame["question_ids"]:
+                q = get_question(self.conn, qid)
+                if q is not None:
+                    questions.append(q)
+            parent_q: Optional[Question] = None
+            if frame["parent_id"] is not None:
+                parent_q = get_question(self.conn, frame["parent_id"])
+            result.append((questions, parent_q))
+        return result
+
+    def _persist_state(
+        self, question_stack: list[tuple[list[Question], Optional[Question]]]
+    ) -> None:
+        """Write current stack + cleared list to the sessions table."""
+        stack_json = self._serialize_stack(question_stack)
+        cleared_json = json.dumps([q.id for q in self._cleared])
+        update_session_state(self.conn, self.session_id, stack_json, cleared_json)
+
+    # ------------------------------------------------------------------
+    # Main run loop
+    # ------------------------------------------------------------------
 
     async def run(self) -> None:
         """
@@ -213,140 +271,191 @@ class SessionRunner:
 
         The question queue is a stack of lists. Each list is a group of questions
         at the same Hydra depth. When a group is cleared, we return to the parent
-        group. The stack starts with the 6 root questions.
+        group. The stack starts with the root questions (generated or restored).
         """
-        # --- Phase: Generate questions ---
-        self.state = SessionState.GENERATING
-        try:
-            root_questions = await generate_root_questions(
-                self.conn, self.client, self.config.topic_id, self.config.num_levels
-            )
-        except GenerationError as exc:
-            self.state = SessionState.ABORTED
-            await self.event_handler(SessionAborted(reason=str(exc)))
-            return
-
-        # Stack of (question_list, parent_question_or_None)
-        # Each frame = (questions_to_answer, parent_that_was_failed)
-        question_stack: list[tuple[list[Question], Optional[Question]]] = [
-            (root_questions, None)
-        ]
-
-        while question_stack:
-            current_group, parent_q = question_stack[-1]
-
-            if not current_group:
-                # Group cleared — pop back to parent
-                question_stack.pop()
-                # If parent was a root question, mark it cleared and continue
-                if parent_q is not None and parent_q not in self._cleared:
-                    self._cleared.append(parent_q)
-                continue
-
-            question = current_group[0]
-            depth = len(question_stack) - 1
-
-            # --- Present question ---
-            self.state = SessionState.QUESTION_PRESENTED
-            await self.event_handler(QuestionPresented(
-                question=question,
-                index=root_questions.index(self._root_ancestor(question, root_questions)) + 1
-                      if depth == 0 else 1,
-                total=self.config.num_levels,
-                depth=depth,
-            ))
-
-            # --- Determine effective timing for this attempt ---
-            # Only time if: session is timed, question is not a Hydra sub-question,
-            # and the question has never been attempted before.
-            is_hydra = question.parent_id is not None
-            has_prior_attempt = get_latest_attempt(self.conn, question.id) is not None
-            effective_timed = (
-                self.config.timing == TimingMode.TIMED
-                and not is_hydra
-                and not has_prior_attempt
-            )
-
-            # --- Await answer ---
-            self.state = SessionState.AWAITING_ANSWER
-            answer_text, time_taken_s = await self.answer_provider(question, effective_timed)
-
-            # --- Score ---
-            self.state = SessionState.SCORING
+        if self._restored_record is not None:
+            # --- Resume: restore stack from DB ---
+            self.state = SessionState.GENERATING  # reuse state for "loading"
+            root_questions = self._load_root_questions(self._restored_record)
+            question_stack = self._deserialize_stack(self._restored_record.question_stack)
+            # Restore cleared list
+            if self._restored_record.cleared_ids:
+                for qid in json.loads(self._restored_record.cleared_ids):
+                    q = get_question(self.conn, qid)
+                    if q is not None:
+                        self._cleared.append(q)
+        else:
+            # --- Fresh start: generate questions and create session row ---
+            self.state = SessionState.GENERATING
             try:
-                attempt, diagnosis = await score_answer(
-                    conn=self.conn,
-                    client=self.client,
-                    question=question,
-                    session_id=self.session_id,
-                    answer_text=answer_text,
-                    time_taken_s=time_taken_s,
-                    timed=effective_timed,
-                    threshold=self.config.threshold,
+                root_questions = await generate_root_questions(
+                    self.conn, self.client, self.config.topic_id, self.config.num_levels
                 )
-            except ScoringError as exc:
+            except GenerationError as exc:
                 self.state = SessionState.ABORTED
-                await self.event_handler(SessionAborted(reason=f"Scoring failed: {exc}"))
+                await self.event_handler(SessionAborted(reason=str(exc)))
                 return
 
-            attempt = record_attempt(self.conn, attempt)
-            self._all_attempts.append(attempt)
+            # Stack of (question_list, parent_question_or_None)
+            # NOTE: use a copy so root_questions stays an immutable snapshot for index lookups.
+            question_stack: list[tuple[list[Question], Optional[Question]]] = [
+                (list(root_questions), None)
+            ]
 
-            # --- Emit result ---
-            self.state = SessionState.SHOWING_RESULT
-            await self.event_handler(AnswerScored(
-                attempt=attempt,
-                diagnosis=diagnosis,
-                ideal_answer=question.ideal_answer,
+            # Persist initial session row
+            initial_stack = self._serialize_stack(question_stack)
+            root_ids_json = json.dumps([q.id for q in root_questions])
+            create_session_record(self.conn, SessionRecord(
+                session_id=self.session_id,
+                topic_id=self.config.topic_id,
+                timing=self.config.timing.value,
+                threshold=self.config.threshold,
+                num_levels=self.config.num_levels,
+                question_stack=initial_stack,
+                cleared_ids="[]",
+                root_ids=root_ids_json,
             ))
 
-            if attempt.passed:
-                # Question cleared — advance in current group
-                current_group.pop(0)
-                if depth == 0:
-                    self._cleared.append(question)
-                # Write to both queues so both review and super-review see the result
-                for queue_name in ("timed", "untimed"):
-                    upsert_review_entry(self.conn, ReviewEntry(
-                        question_id=question.id,
-                        queue=queue_name,
-                        last_score=attempt.final_score,
-                        state="learning",
-                    ))
-            else:
-                # Failed — spawn sub-questions and push them onto the stack
-                self.state = SessionState.HYDRA_SPAWNING
-                try:
-                    subquestions = await spawn_subquestions(
-                        conn=self.conn,
-                        client=self.client,
-                        parent_question=question,
-                        student_answer=answer_text,
-                        diagnosis=diagnosis,
-                    )
-                except HydraError:
-                    # If Hydra fails, just re-queue the same question
-                    subquestions = []
+        try:
+            while question_stack:
+                current_group, parent_q = question_stack[-1]
 
-                await self.event_handler(HydraSpawned(
-                    subquestions=subquestions,
-                    parent_question=question,
+                if not current_group:
+                    # Group cleared — pop back to parent
+                    question_stack.pop()
+                    # If parent was a root question, mark it cleared and continue
+                    if parent_q is not None and parent_q not in self._cleared:
+                        self._cleared.append(parent_q)
+                    self._persist_state(question_stack)
+                    continue
+
+                question = current_group[0]
+                depth = len(question_stack) - 1
+
+                # --- Present question ---
+                self.state = SessionState.QUESTION_PRESENTED
+                await self.event_handler(QuestionPresented(
+                    question=question,
+                    index=root_questions.index(self._root_ancestor(question, root_questions)) + 1
+                          if depth == 0 else 1,
+                    total=self.config.num_levels,
+                    depth=depth,
                 ))
 
-                # Move the failed question to the end of its group (will retry after sub-questions)
-                current_group.pop(0)
-                current_group.append(question)
+                # --- Determine effective timing for this attempt ---
+                # Only time if: session is timed, question is not a Hydra sub-question,
+                # and the question has never been attempted before in this session.
+                is_hydra = question.parent_id is not None
+                has_prior_attempt = get_latest_attempt(self.conn, question.id) is not None
+                effective_timed = (
+                    self.config.timing == TimingMode.TIMED
+                    and not is_hydra
+                    and not has_prior_attempt
+                )
 
-                if subquestions:
-                    # Push sub-questions as a new frame
-                    question_stack.append((list(subquestions), question))
+                # --- Await answer ---
+                self.state = SessionState.AWAITING_ANSWER
+                answer_text, time_taken_s = await self.answer_provider(question, effective_timed)
+
+                # --- Score ---
+                self.state = SessionState.SCORING
+                try:
+                    attempt, diagnosis = await score_answer(
+                        conn=self.conn,
+                        client=self.client,
+                        question=question,
+                        session_id=self.session_id,
+                        answer_text=answer_text,
+                        time_taken_s=time_taken_s,
+                        timed=effective_timed,
+                        threshold=self.config.threshold,
+                    )
+                except ScoringError as exc:
+                    self.state = SessionState.ABORTED
+                    await self.event_handler(SessionAborted(reason=f"Scoring failed: {exc}"))
+                    return
+
+                attempt = record_attempt(self.conn, attempt)
+                self._all_attempts.append(attempt)
+
+                # --- Emit result ---
+                self.state = SessionState.SHOWING_RESULT
+                await self.event_handler(AnswerScored(
+                    attempt=attempt,
+                    diagnosis=diagnosis,
+                    ideal_answer=question.ideal_answer,
+                ))
+
+                if attempt.passed:
+                    # Question cleared — advance in current group
+                    current_group.pop(0)
+                    if depth == 0:
+                        self._cleared.append(question)
+                    # Write to both queues so both review and super-review see the result
+                    for queue_name in ("timed", "untimed"):
+                        upsert_review_entry(self.conn, ReviewEntry(
+                            question_id=question.id,
+                            queue=queue_name,
+                            last_score=attempt.final_score,
+                            state="learning",
+                        ))
+                else:
+                    # Failed — spawn sub-questions and push them onto the stack
+                    self.state = SessionState.HYDRA_SPAWNING
+                    try:
+                        subquestions = await spawn_subquestions(
+                            conn=self.conn,
+                            client=self.client,
+                            parent_question=question,
+                            student_answer=answer_text,
+                            diagnosis=diagnosis,
+                        )
+                    except HydraError:
+                        # If Hydra fails, just re-queue the same question
+                        subquestions = []
+
+                    await self.event_handler(HydraSpawned(
+                        subquestions=subquestions,
+                        parent_question=question,
+                    ))
+
+                    # Move the failed question to the end of its group (will retry after sub-questions)
+                    current_group.pop(0)
+                    current_group.append(question)
+
+                    if subquestions:
+                        # Push sub-questions as a new frame
+                        question_stack.append((list(subquestions), question))
+
+                # Persist state after each answer so Ctrl+C can resume from here
+                self._persist_state(question_stack)
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Save state at point of interruption so session can be resumed
+            self._persist_state(question_stack)
+            self.state = SessionState.ABORTED
+            await self.event_handler(SessionAborted(reason="Session interrupted. Resume with: scathach session --resume " + self.session_id))
+            return
 
         # --- Session complete ---
+        complete_session(self.conn, self.session_id)
         self.state = SessionState.SESSION_COMPLETE
         await self.event_handler(SessionComplete(
             cleared_questions=self._cleared,
             attempts=self._all_attempts,
         ))
+
+    def _load_root_questions(self, record: SessionRecord) -> list[Question]:
+        """Reconstruct the root question list from a session record."""
+        if not record.root_ids:
+            return []
+        ids: list[int] = json.loads(record.root_ids)
+        questions: list[Question] = []
+        for qid in ids:
+            q = get_question(self.conn, qid)
+            if q is not None:
+                questions.append(q)
+        return questions
 
     def _root_ancestor(self, question: Question, roots: list[Question]) -> Question:
         """Return the root question in `roots` that is an ancestor of `question`."""

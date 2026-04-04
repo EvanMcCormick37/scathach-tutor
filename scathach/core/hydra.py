@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 from scathach.db.models import Question
-from scathach.db.repository import insert_question
+from scathach.db.repository import get_children, insert_question
 from scathach.llm.client import LLMClient
 from scathach.llm.parsing import ParseError, parse_questions_response
 from scathach.llm.prompts import render_hydra_prompt
@@ -48,12 +48,15 @@ async def spawn_subquestions(
 
     target_difficulty = max(1, parent_question.difficulty - 1)
 
+    prior_subquestions = get_children(conn, parent_question.id)
+
     system_prompt, user_prompt = render_hydra_prompt(
         parent_body=parent_question.body,
         parent_difficulty=parent_question.difficulty,
         student_answer=student_answer,
         diagnosis=diagnosis,
         target_difficulty=target_difficulty,
+        prior_subquestions=prior_subquestions or None,
     )
 
     raw_response: str | None = None

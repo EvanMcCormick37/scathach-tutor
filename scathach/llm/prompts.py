@@ -179,8 +179,15 @@ Student's answer:
 
 Diagnosis of conceptual gaps:
 {diagnosis}
-
+{prior_section}
 Generate 3 sub-questions at difficulty level {target_difficulty} that address these gaps."""
+
+_HYDRA_PRIOR_SECTION = """\
+
+Previously generated sub-questions for this parent — do NOT repeat or closely \
+paraphrase any of the following:
+{bodies}
+"""
 
 
 def render_hydra_prompt(
@@ -189,16 +196,19 @@ def render_hydra_prompt(
     student_answer: str,
     diagnosis: str,
     target_difficulty: int,
+    prior_subquestions: "list[Question] | None" = None,
 ) -> tuple[str, str]:
     """
     Render the Hydra sub-question generation prompts.
 
     Args:
-        parent_body:        The question the student failed.
-        parent_difficulty:  Difficulty of the parent question (1–6).
-        student_answer:     The student's failing answer text.
-        diagnosis:          LLM-generated diagnosis of conceptual gaps.
-        target_difficulty:  Difficulty for sub-questions (max(1, parent - 1)).
+        parent_body:          The question the student failed.
+        parent_difficulty:    Difficulty of the parent question (1–6).
+        student_answer:       The student's failing answer text.
+        diagnosis:            LLM-generated diagnosis of conceptual gaps.
+        target_difficulty:    Difficulty for sub-questions (max(1, parent - 1)).
+        prior_subquestions:   Existing child questions for this parent; embedded so
+                              the LLM avoids generating duplicates.
 
     Returns:
         (system_prompt, user_prompt)
@@ -209,12 +219,17 @@ def render_hydra_prompt(
         target_label=dl.label,
         answer_descriptor=dl.answer_descriptor,
     )
+    prior_section = ""
+    if prior_subquestions:
+        bodies = "\n".join(f"- {q.body}" for q in prior_subquestions)
+        prior_section = _HYDRA_PRIOR_SECTION.format(bodies=bodies)
     user = _HYDRA_USER.format(
         parent_difficulty=parent_difficulty,
         parent_body=parent_body,
         student_answer=student_answer,
         diagnosis=diagnosis,
         target_difficulty=target_difficulty,
+        prior_section=prior_section,
     )
     return system, user
 

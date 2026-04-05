@@ -12,7 +12,7 @@ scathach reads your source material — PDF, DOCX, PPTX, Markdown, plain text, a
 ### 2. Start a learning session
 When you start a session, an LLM generates **6 open-ended questions** from the topic, one per difficulty level (1 = recall, 6 = synthesis). You type your answers in the terminal. Each answer is scored 0–10 by the LLM against the source material.
 
-### 3. The Hydra Protocol
+### 3. The 'Hydra Protocol'
 If you fail a question, scathach spawns **3 targeted sub-questions** that address the specific gap in your understanding diagnosed by the scorer. Clear the sub-questions and you return to the parent question. The tree can branch multiple levels deep.
 
 ### 4. Timed mode
@@ -22,7 +22,7 @@ Sessions can be run timed or untimed. In timed mode, each question has a time li
 Every question you clear gets scheduled for future review using an FSRS-based algorithm. Two review commands keep your knowledge fresh:
 
 - **`review`** — short-answer questions (levels 1–2), due questions only
-- **`super-review`** — long-answer questions (levels 3–6), worst performers first, optionally with Hydra
+- **`super-review`** — long-answer questions (levels 3–6), worst performers first, optionally with Hydra subquestion generation.
 
 ### 6. Session persistence
 Sessions are saved to the database after every question. If you quit mid-session with Ctrl+C, the session is preserved and can be resumed exactly where you left off.

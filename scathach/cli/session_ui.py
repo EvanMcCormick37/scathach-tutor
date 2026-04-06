@@ -100,16 +100,16 @@ class DualZoneTimer:
 
 
 async def _get_answer_untimed(question: Question) -> tuple[str, Optional[float]]:
-    """Collect a multiline answer without a timer. Shift+Enter to submit."""
+    """Collect a multiline answer without a timer. Escape+Enter to submit."""
     kb = KeyBindings()
 
-    @kb.add("s-enter")
+    @kb.add("escape", "enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
 
     session: PromptSession = PromptSession(key_bindings=kb)
     console.print(
-        "[dim]Type your answer below. Press [bold]Shift+Enter[/bold] to submit.[/dim]"
+        "[dim]Type your answer below. Press [bold]Escape+Enter[/bold] to submit.[/dim]"
     )
     answer = await session.prompt_async("> ", multiline=True)
     return answer.strip(), None
@@ -121,13 +121,13 @@ async def _get_answer_timed(question: Question) -> tuple[str, float]:
     timer.start()
 
     console.print(
-        f"[dim]Type your answer below. Press [bold]Shift+Enter[/bold] to submit. "
+        f"[dim]Type your answer below. Press [bold]Escape+Enter[/bold] to submit. "
         f"Time limit: {dl.time_limit_s}s[/dim]"
     )
 
     kb = KeyBindings()
 
-    @kb.add("s-enter")
+    @kb.add("escape", "enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
     

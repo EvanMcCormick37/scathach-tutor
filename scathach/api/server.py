@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from scathach.api.routes import config, review, sessions, topics
-from scathach.config import settings
+from scathach.config import CONFIG_DIR, settings
 from scathach.db.schema import open_db
 from scathach.llm.client import LLMClient, make_client
 
@@ -35,7 +35,8 @@ class AppState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup — ensure the config/data directory exists before opening DB or .env
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     app.state.conn = open_db(settings.db_path)
     app.state.client = make_client()
     yield

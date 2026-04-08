@@ -7,7 +7,7 @@
     "build:ui": "cd ui && npm run build",
     "tauri": "tauri",
     "tauri:dev": "cargo tauri dev --manifest-path src-tauri/Cargo.toml",
-    "tauri:build": "cargo tauri build --manifest-path src-tauri/Cargo.toml"
+    "tauri:build": "cargo tauri build -- --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

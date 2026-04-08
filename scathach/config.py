@@ -1,6 +1,7 @@
 """
 Application configuration via pydantic-settings.
-Settings are read from environment variables or a .env file.
+Settings are read from environment variables or a .env file located at
+~/.scathach/.env so they persist correctly when running as a packaged binary.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Re-export so callers can import TimingMode from either config or core.question
 from scathach.core.question import TimingMode  # noqa: F401 — re-exported for convenience
 
+# User-writable config directory — same location as the database.
+CONFIG_DIR = Path("~/.scathach").expanduser()
+ENV_FILE = CONFIG_DIR / ".env"
+
 
 class ModelProvider(str, Enum):
     QWEN3_6_PLUS = "qwen/qwen3.6-plus:free"
@@ -24,7 +29,7 @@ class ModelProvider(str, Enum):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         env_prefix="SCATHACH_",
         case_sensitive=False,

@@ -4,4 +4,8 @@
 .claude
 docs
 tests
+node_modules
+build/
+dist/
+binaries/
 __pycache__

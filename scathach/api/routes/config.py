@@ -8,17 +8,15 @@ POST /config/test    — validate the API key / LLM connectivity
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dotenv import set_key
 from fastapi import APIRouter, HTTPException, Request
 
 from scathach.api.models import ConfigPatchRequest, ConfigResponse, ConfigTestResponse
-from scathach.config import settings
+from scathach.config import ENV_FILE, settings
 
 router = APIRouter()
 
-_ENV_FILE = Path(".env")
+_ENV_FILE = ENV_FILE
 
 
 def _current_config() -> ConfigResponse:

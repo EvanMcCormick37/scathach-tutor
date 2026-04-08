@@ -12,3 +12,9 @@ gen/schemas/
 target/
 binaries/
 __pycache__
+.github
+src-tauri
+icon.jpg
+*.exe
+*.msi
+*.spec

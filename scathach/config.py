@@ -27,6 +27,12 @@ class ModelProvider(str, Enum):
     GEMINI_FLASH = "google/gemini-flash-1.5"
 
 
+class OnFailedReview(str, Enum):
+    REPEAT = "repeat"   # always repeat the question immediately
+    SKIP = "skip"       # never repeat, let FSRS reschedule
+    CHOOSE = "choose"   # ask the user each time
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -68,6 +74,15 @@ class Settings(BaseSettings):
     hydra_in_super_review: bool = Field(
         default=False,
         description="Whether the Hydra Protocol is enabled during super-review sessions.",
+    )
+    on_failed_review: OnFailedReview = Field(
+        default=OnFailedReview.CHOOSE,
+        description=(
+            "What to do when a review question is failed: "
+            "'repeat' always re-queues it immediately, "
+            "'skip' leaves rescheduling to FSRS, "
+            "'choose' prompts you each time."
+        ),
     )
     open_doc_on_session: bool = Field(
         default=False,

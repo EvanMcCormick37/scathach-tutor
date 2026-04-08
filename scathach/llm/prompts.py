@@ -52,7 +52,7 @@ Examples of well-formed questions at each level:
 # ---------------------------------------------------------------------------
 
 _QUESTION_GENERATION_SYSTEM = """\
-You are a rigorous academic tutor. Your task is to generate exactly 6 open-ended questions \
+You are an academic tutor. Your task is to generate exactly 6 open-ended questions \
 from the provided document — one for each difficulty level 1 through 6 — that test deep \
 understanding of the material.
 
@@ -184,8 +184,8 @@ Generate 3 sub-questions at difficulty level {target_difficulty} that address th
 
 _HYDRA_PRIOR_SECTION = """\
 
-Previously generated sub-questions for this parent — do NOT repeat or closely \
-paraphrase any of the following:
+The following level {target_difficulty} questions already exist for this document — \
+DO NOT repeat or closely paraphrase any of them:
 {bodies}
 """
 
@@ -196,19 +196,20 @@ def render_hydra_prompt(
     student_answer: str,
     diagnosis: str,
     target_difficulty: int,
-    prior_subquestions: "list[Question] | None" = None,
+    existing_questions: "list[Question] | None" = None,
 ) -> tuple[str, str]:
     """
     Render the Hydra sub-question generation prompts.
 
     Args:
-        parent_body:          The question the student failed.
-        parent_difficulty:    Difficulty of the parent question (1–6).
-        student_answer:       The student's failing answer text.
-        diagnosis:            LLM-generated diagnosis of conceptual gaps.
-        target_difficulty:    Difficulty for sub-questions (max(1, parent - 1)).
-        prior_subquestions:   Existing child questions for this parent; embedded so
-                              the LLM avoids generating duplicates.
+        parent_body:        The question the student failed.
+        parent_difficulty:  Difficulty of the parent question (1–6).
+        student_answer:     The student's failing answer text.
+        diagnosis:          LLM-generated diagnosis of conceptual gaps.
+        target_difficulty:  Difficulty for sub-questions (max(1, parent - 1)).
+        existing_questions: All questions for this topic at `target_difficulty`
+                            (root and sub); embedded so the LLM avoids duplicates
+                            across the entire document, not just this parent.
 
     Returns:
         (system_prompt, user_prompt)
@@ -220,9 +221,11 @@ def render_hydra_prompt(
         answer_descriptor=dl.answer_descriptor,
     )
     prior_section = ""
-    if prior_subquestions:
-        bodies = "\n".join(f"- {q.body}" for q in prior_subquestions)
-        prior_section = _HYDRA_PRIOR_SECTION.format(bodies=bodies)
+    if existing_questions:
+        bodies = "\n".join(f"- {q.body}" for q in existing_questions)
+        prior_section = _HYDRA_PRIOR_SECTION.format(
+            target_difficulty=target_difficulty, bodies=bodies
+        )
     user = _HYDRA_USER.format(
         parent_difficulty=parent_difficulty,
         parent_body=parent_body,
@@ -247,14 +250,12 @@ Scoring criteria:
   - Completeness: Does the answer address all key aspects relative to difficulty level {difficulty} ({difficulty_label})?
   - Clarity: Is the answer clearly expressed?
 
-Expected answer format at this difficulty level: {answer_descriptor}
+Expected answer format at this difficulty level: {answer_descriptor}, {document_coverage}.
 
-A score of 0 means completely wrong or no meaningful attempt.
-A score of 5–6 means partially correct with significant gaps.
-A score of 7–8 means mostly correct with minor gaps.
-A score of 9–10 means excellent, comprehensive answer.
+A score of 0 means completely wrong or no meaningful attempt. E.g. "IDK" or a blank answer.
+A score of 10 means an ideal answer which demonstrates deep and thourough understanding of the material.
 
-IMPORTANT: Do NOT consider the time the student took. Score the answer on its content merits only.
+Most answers will not be worth 0 or 10 points, but will fall somewhere in between. Use your judgment to determine the score for the user's answer.
 
 Respond with ONLY a valid JSON object:
 {{
@@ -302,6 +303,7 @@ def render_scoring_prompt(
         difficulty=difficulty,
         difficulty_label=dl.label,
         answer_descriptor=dl.answer_descriptor,
+        document_coverage=dl.document_coverage,
     )
     user = _SCORING_USER.format(
         difficulty=difficulty,

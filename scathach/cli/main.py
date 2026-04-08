@@ -20,6 +20,7 @@ from scathach.config import CONFIG_DIR, settings
 from scathach.core.question import TimingMode
 from scathach.core.session import SessionConfig, SessionRunner
 from scathach.db.repository import (
+    delete_session,
     get_session_record,
     get_topic_by_id,
     get_topic_by_name,
@@ -367,6 +368,9 @@ def session(
     resume: Optional[str] = typer.Option(
         None, "--resume", "-r", help="Resume an interrupted session by its ID."
     ),
+    delete: Optional[str] = typer.Option(
+        None, "--delete", "-d", help="Delete a session and all its questions by ID."
+    ),
     list_sessions: bool = typer.Option(
         False, "--list", help="List all unfinished sessions."
     ),
@@ -413,6 +417,21 @@ def session(
                     str(remaining),
                 )
             console.print(table)
+            return
+
+        # ---- Delete session ----
+        if delete is not None:
+            rec = get_session_record(conn, delete)
+            if rec is None:
+                console.print(f"[red]Session '{delete}' not found.[/red]")
+                raise typer.Exit(code=1)
+            topic_obj = get_topic_by_id(conn, rec.topic_id)
+            topic_label = f"[bold]{topic_obj.name}[/bold]" if topic_obj else f"topic id={rec.topic_id}"
+            n = delete_session(conn, delete)
+            console.print(
+                f"[green]Deleted session [bold]{delete}[/bold] "
+                f"({topic_label}, {n} question(s) removed).[/green]"
+            )
             return
 
         # ---- Resume existing session ----
@@ -547,6 +566,7 @@ def review(
         asyncio.run(run_review_session(
             conn=conn, client=llm_client, queue=queue,
             timing=timing_mode, threshold=settings.quality_threshold, limit=limit,
+            on_failed=settings.on_failed_review,
         ))
     finally:
         conn.close()
@@ -598,6 +618,7 @@ def super_review(
             conn=conn, client=llm_client, queue=queue,
             timing=timing_mode, threshold=settings.quality_threshold,
             limit=limit, hydra_enabled=hydra_enabled,
+            on_failed=settings.on_failed_review,
         ))
     finally:
         conn.close()
@@ -649,6 +670,7 @@ def config_cmd(
         table.add_row("Review timing", settings.review_timing.value)
         table.add_row("Quality threshold", str(settings.quality_threshold))
         table.add_row("Hydra in super-review", str(settings.hydra_in_super_review))
+        table.add_row("On failed review", settings.on_failed_review.value)
         table.add_row("Open doc on session", str(settings.open_doc_on_session))
         table.add_row("DB path", str(settings.db_path))
         console.print(table)

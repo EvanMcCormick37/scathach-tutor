@@ -80,6 +80,10 @@ class DifficultyLevel(Enum):
         return self.value.answer_descriptor
 
     @property
+    def document_coverage(self) -> str:
+        return self.value.document_coverage
+
+    @property
     def penalty_limit_s(self) -> int:
         """The auto-fail threshold: 2 × base time limit."""
         return self.time_limit_s * 2

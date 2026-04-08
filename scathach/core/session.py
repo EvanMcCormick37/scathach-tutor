@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import sqlite3
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Optional
@@ -153,6 +153,21 @@ class AnswerScored(SessionEvent):
 
 
 @dataclass
+class GeneratingCurriculum(SessionEvent):
+    topic_name: str
+
+
+@dataclass
+class CurriculumReady(SessionEvent):
+    num_questions: int
+
+
+@dataclass
+class HydraSpawning(SessionEvent):
+    parent_question: Question
+
+
+@dataclass
 class HydraSpawned(SessionEvent):
     subquestions: list[Question]
     parent_question: Question
@@ -212,7 +227,7 @@ class SessionRunner:
             self.session_id = restored_record.session_id
             self._restored_record = restored_record
         else:
-            self.session_id = str(uuid.uuid4())
+            self.session_id = secrets.token_hex(3)
             self._restored_record = None
 
         self.state = SessionState.IDLE
@@ -287,6 +302,9 @@ class SessionRunner:
         else:
             # --- Fresh start: generate questions and create session row ---
             self.state = SessionState.GENERATING
+            topic = get_topic_by_id(self.conn, self.config.topic_id)
+            topic_name = topic.name if topic else f"topic {self.config.topic_id}"
+            await self.event_handler(GeneratingCurriculum(topic_name=topic_name))
             try:
                 root_questions = await generate_root_questions(
                     self.conn, self.client, self.config.topic_id, self.config.num_levels
@@ -295,6 +313,7 @@ class SessionRunner:
                 self.state = SessionState.ABORTED
                 await self.event_handler(SessionAborted(reason=str(exc)))
                 return
+            await self.event_handler(CurriculumReady(num_questions=len(root_questions)))
 
             # Stack of (question_list, parent_question_or_None)
             # NOTE: use a copy so root_questions stays an immutable snapshot for index lookups.
@@ -402,6 +421,7 @@ class SessionRunner:
                 else:
                     # Failed — spawn sub-questions and push them onto the stack
                     self.state = SessionState.HYDRA_SPAWNING
+                    await self.event_handler(HydraSpawning(parent_question=question))
                     try:
                         subquestions = await spawn_subquestions(
                             conn=self.conn,

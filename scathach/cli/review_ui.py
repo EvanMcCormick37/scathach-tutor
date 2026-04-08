@@ -9,23 +9,25 @@ Both share the same answer/score/timer flow and update the same FSRS queue table
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
-import uuid
 from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from scathach.config import OnFailedReview
 from scathach.core.hydra import HydraError, spawn_subquestions
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scheduler import get_scheduled_questions, update_schedule
 from scathach.core.scoring import ScoringError, score_answer
 from scathach.db.models import Attempt, Question
-from scathach.db.repository import record_attempt
+from scathach.db.repository import delete_question, record_attempt
 from scathach.llm.client import LLMClient
 
 from scathach.cli.session_ui import (
+    TossQuestion,
     _colorize_score,
     _difficulty_stars,
     _get_answer_timed,
@@ -53,12 +55,15 @@ async def run_review_session(
     timing: TimingMode,
     threshold: int,
     limit: int = 20,
+    on_failed: OnFailedReview = OnFailedReview.CHOOSE,
 ) -> None:
     """
     Run a standard review session (difficulty 1–2).
 
     FSRS scheduling determines which questions are due.
     No Hydra Protocol — failed questions are scheduled sooner by FSRS.
+    When a question is failed, `on_failed` controls whether it is repeated
+    immediately ('repeat'), skipped ('skip'), or the user is asked ('choose').
     """
     from datetime import UTC, datetime
     now = datetime.now(UTC)
@@ -81,19 +86,29 @@ async def run_review_session(
         border_style="cyan",
     ))
 
-    session_id = str(uuid.uuid4())
+    session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
-    for i, question in enumerate(questions, start=1):
+    queue_list = list(questions)
+    i = 0
+
+    while i < len(queue_list):
+        question = queue_list[i]
+        i += 1
         dl = DifficultyLevel.from_int(question.difficulty)
         console.print()
         console.print(Panel(
             question.body,
-            title=f"Review {i}/{len(questions)} — {_difficulty_stars(question.difficulty)} ({dl.label})",
+            title=f"Review {i}/{len(queue_list)} — {_difficulty_stars(question.difficulty)} ({dl.label})",
             border_style="blue",
         ))
 
-        answer_text, time_taken_s = await _collect_answer(question, timing)
+        try:
+            answer_text, time_taken_s = await _collect_answer(question, timing)
+        except TossQuestion:
+            delete_question(conn, question.id)
+            console.print("[dim]Question tossed and permanently deleted.[/dim]")
+            continue
 
         try:
             attempt, diagnosis = await score_answer(
@@ -112,6 +127,9 @@ async def run_review_session(
         update_schedule(conn, question.id, attempt.final_score, queue)
         _show_result(attempt, diagnosis, question.ideal_answer)
 
+        if not attempt.passed and _should_repeat(on_failed):
+            queue_list.append(question)
+
     if all_attempts:
         _render_summary(all_attempts, title="Review Summary")
 
@@ -129,6 +147,7 @@ async def run_super_review_session(
     threshold: int,
     limit: int = 10,
     hydra_enabled: bool = False,
+    on_failed: OnFailedReview = OnFailedReview.CHOOSE,
 ) -> None:
     """
     Run a super-review session (difficulty 3–6).
@@ -136,6 +155,8 @@ async def run_super_review_session(
     Questions are ordered: difficulty ASC, then worst-score-first within each tier.
     Hydra Protocol is optional (controlled by `hydra_enabled`).
     FSRS scheduling determines which questions are due.
+    When a question is failed, `on_failed` controls whether it is repeated
+    immediately ('repeat'), skipped ('skip'), or the user is asked ('choose').
     """
     from datetime import UTC, datetime
     now = datetime.now(UTC)
@@ -159,7 +180,7 @@ async def run_super_review_session(
         border_style="magenta",
     ))
 
-    session_id = str(uuid.uuid4())
+    session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
     # Use a list so Hydra sub-questions can be appended mid-session
@@ -182,7 +203,12 @@ async def run_super_review_session(
             border_style=border,
         ))
 
-        answer_text, time_taken_s = await _collect_answer(question, timing)
+        try:
+            answer_text, time_taken_s = await _collect_answer(question, timing)
+        except TossQuestion:
+            delete_question(conn, question.id)
+            console.print("[dim]Question tossed and permanently deleted.[/dim]")
+            continue
 
         try:
             attempt, diagnosis = await score_answer(
@@ -219,6 +245,10 @@ async def run_super_review_session(
             except HydraError as exc:
                 console.print(f"[dim]Hydra spawn failed ({exc}), continuing.[/dim]")
 
+        # Repeat on failure (appended after any Hydra sub-questions)
+        if not attempt.passed and _should_repeat(on_failed):
+            queue_list.append(question)
+
     if all_attempts:
         _render_summary(all_attempts, title="Super-Review Summary")
 
@@ -230,8 +260,8 @@ async def run_super_review_session(
 
 async def _collect_answer(question: Question, timing: TimingMode) -> tuple[str, Optional[float]]:
     if timing == TimingMode.TIMED:
-        return await _get_answer_timed(question)
-    return await _get_answer_untimed(question)
+        return await _get_answer_timed(question, allow_toss=True)
+    return await _get_answer_untimed(question, allow_toss=True)
 
 
 def _show_result(attempt: Attempt, diagnosis: str, ideal_answer: str) -> None:
@@ -244,6 +274,18 @@ def _show_result(attempt: Attempt, diagnosis: str, ideal_answer: str) -> None:
     console.print(f"[dim]Diagnosis: {diagnosis}[/dim]")
     if not attempt.passed:
         console.print(Panel(ideal_answer, title="[yellow]Ideal Answer[/yellow]", border_style="yellow"))
+
+
+def _should_repeat(on_failed: OnFailedReview) -> bool:
+    """Return True if the failed question should be repeated immediately."""
+    if on_failed == OnFailedReview.REPEAT:
+        return True
+    if on_failed == OnFailedReview.SKIP:
+        return False
+    # CHOOSE — prompt the user
+    console.print("\n[yellow]Would you like to repeat this question?[/yellow] \\[Y/n] ", end="")
+    raw = input().strip().lower()
+    return raw in ("", "y", "yes")
 
 
 def _render_summary(attempts: list[Attempt], title: str = "Summary") -> None:

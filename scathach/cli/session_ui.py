@@ -18,15 +18,20 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
 from scathach.core.question import DifficultyLevel, TimerZone, TimingMode
 from scathach.core.session import (
     AnswerScored,
+    CurriculumReady,
+    GeneratingCurriculum,
     HydraSpawned,
+    HydraSpawning,
     QuestionPresented,
     SessionAborted,
     SessionComplete,
@@ -37,6 +42,48 @@ from scathach.core.session import (
 from scathach.db.models import Question
 
 console = Console()
+
+# Active spinner task — started during long LLM calls, cancelled when done.
+_spinner_task: Optional[asyncio.Task] = None
+
+
+async def _run_spinner(message: str) -> None:
+    """Display an animated spinner until cancelled."""
+    renderable = Spinner("dots", text=Text(f" {message}", style="cyan"))
+    with Live(renderable, console=console, refresh_per_second=12, transient=True):
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            pass
+
+
+async def _start_spinner(message: str) -> None:
+    global _spinner_task
+    await _stop_spinner()
+    _spinner_task = asyncio.create_task(_run_spinner(message))
+
+
+async def _stop_spinner(done_message: str = "") -> None:
+    global _spinner_task
+    if _spinner_task and not _spinner_task.done():
+        _spinner_task.cancel()
+        try:
+            await _spinner_task
+        except asyncio.CancelledError:
+            pass
+    _spinner_task = None
+    if done_message:
+        console.print(done_message)
+
+
+# ---------------------------------------------------------------------------
+# Toss sentinel
+# ---------------------------------------------------------------------------
+
+
+class TossQuestion(Exception):
+    """Raised from answer collectors when the user presses Ctrl+T to toss a question."""
 
 
 # ---------------------------------------------------------------------------
@@ -99,37 +146,60 @@ class DualZoneTimer:
 # ---------------------------------------------------------------------------
 
 
-async def _get_answer_untimed(question: Question) -> tuple[str, Optional[float]]:
+async def _get_answer_untimed(
+    question: Question, allow_toss: bool = False
+) -> tuple[str, Optional[float]]:
     """Collect a multiline answer without a timer. Escape+Enter to submit."""
     kb = KeyBindings()
+    toss_flag = [False]
 
     @kb.add("escape", "enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
 
+    if allow_toss:
+        @kb.add("c-t")
+        def toss(event):  # type: ignore[no-untyped-def]
+            toss_flag[0] = True
+            event.current_buffer.validate_and_handle()
+
     session: PromptSession = PromptSession(key_bindings=kb)
-    console.print(
-        "[dim]Type your answer below. Press [bold]Escape+Enter[/bold] to submit.[/dim]"
-    )
+    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit"
+    if allow_toss:
+        hint += ", [bold]Ctrl+T[/bold] to toss"
+    console.print(hint + ".[/dim]")
     answer = await session.prompt_async("> ", multiline=True)
+
+    if toss_flag[0]:
+        raise TossQuestion()
+
     return answer.strip(), None
 
-async def _get_answer_timed(question: Question) -> tuple[str, float]:
+async def _get_answer_timed(
+    question: Question, allow_toss: bool = False
+) -> tuple[str, float]:
     """Collect an answer under the dual-zone timer."""
     dl = DifficultyLevel.from_int(question.difficulty)
     timer = DualZoneTimer(dl.time_limit_s)
     timer.start()
+    toss_flag = [False]
 
-    console.print(
-        f"[dim]Type your answer below. Press [bold]Escape+Enter[/bold] to submit. "
-        f"Time limit: {dl.time_limit_s}s[/dim]"
-    )
+    hint = f"[dim]Type your answer. [bold]Escape+Enter[/bold] to submit"
+    if allow_toss:
+        hint += ", [bold]Ctrl+T[/bold] to toss"
+    console.print(hint + f". Time limit: {dl.time_limit_s}s[/dim]")
 
     kb = KeyBindings()
 
     @kb.add("escape", "enter")
     def submit(event):  # type: ignore[no-untyped-def]
         event.current_buffer.validate_and_handle()
+
+    if allow_toss:
+        @kb.add("c-t")
+        def toss(event):  # type: ignore[no-untyped-def]
+            toss_flag[0] = True
+            event.current_buffer.validate_and_handle()
     
     _BAR_WIDTH = 30
 
@@ -185,6 +255,10 @@ async def _get_answer_timed(question: Question) -> tuple[str, float]:
         console.print("\n[red bold]⏰ Time expired! Input closed.[/red bold]")
 
     elapsed = timer.elapsed()
+
+    if toss_flag[0]:
+        raise TossQuestion()
+
     return answer.strip(), elapsed
 
 
@@ -238,15 +312,26 @@ def pre_session_wizard(defaults: SessionConfig) -> SessionConfig:
 
 async def handle_event(event: SessionEvent) -> None:
     """Render a SessionEvent to the terminal."""
-    if isinstance(event, QuestionPresented):
+    if isinstance(event, GeneratingCurriculum):
+        await _start_spinner(f"Generating curriculum for '{event.topic_name}'…")
+    elif isinstance(event, CurriculumReady):
+        await _stop_spinner(
+            f"[green]✓[/green] [dim]Curriculum ready — {event.num_questions} question(s) generated.[/dim]"
+        )
+    elif isinstance(event, HydraSpawning):
+        await _start_spinner("Spawning Hydra sub-questions…")
+    elif isinstance(event, QuestionPresented):
+        await _stop_spinner()
         _render_question(event)
     elif isinstance(event, AnswerScored):
         _render_scored(event)
     elif isinstance(event, HydraSpawned):
+        await _stop_spinner()
         _render_hydra(event)
     elif isinstance(event, SessionComplete):
         _render_complete(event)
     elif isinstance(event, SessionAborted):
+        await _stop_spinner()
         console.print(f"[red bold]Session aborted:[/red bold] {event.reason}")
 
 

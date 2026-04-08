@@ -133,6 +133,39 @@ def get_question(conn: sqlite3.Connection, question_id: int) -> Optional[Questio
     return _row_to_question(row)
 
 
+def delete_question(conn: sqlite3.Connection, question_id: int) -> None:
+    """
+    Permanently delete a question and all of its descendants (Hydra sub-questions),
+    along with their attempts and review-queue entries.
+
+    Uses a recursive CTE so the full subtree is handled regardless of depth.
+    """
+    rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+            SELECT ?
+            UNION ALL
+            SELECT q.id FROM questions q
+            JOIN descendants d ON q.parent_id = d.id
+        )
+        SELECT id FROM descendants
+        """,
+        (question_id,),
+    ).fetchall()
+
+    all_ids = [r["id"] for r in rows]
+    placeholders = ",".join("?" * len(all_ids))
+
+    conn.execute(f"DELETE FROM timed_review_queue   WHERE question_id IN ({placeholders})", all_ids)
+    conn.execute(f"DELETE FROM untimed_review_queue WHERE question_id IN ({placeholders})", all_ids)
+    conn.execute(f"DELETE FROM attempts             WHERE question_id IN ({placeholders})", all_ids)
+    # Delete children before parents to satisfy the self-referential FK constraint.
+    # Auto-increment guarantees children always have higher IDs than their parents.
+    for qid in sorted(all_ids, reverse=True):
+        conn.execute("DELETE FROM questions WHERE id = ?", (qid,))
+    conn.commit()
+
+
 def get_children(conn: sqlite3.Connection, question_id: int) -> list[Question]:
     """Return all direct child questions of a given question."""
     rows = conn.execute(
@@ -141,6 +174,23 @@ def get_children(conn: sqlite3.Connection, question_id: int) -> list[Question]:
         FROM questions WHERE parent_id = ? ORDER BY difficulty ASC
         """,
         (question_id,),
+    ).fetchall()
+    return [_row_to_question(r) for r in rows]
+
+
+def get_questions_by_difficulty(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    difficulty: int,
+) -> list[Question]:
+    """Return all questions (root and sub) for a topic at a specific difficulty level."""
+    rows = conn.execute(
+        """
+        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
+        FROM questions WHERE topic_id = ? AND difficulty = ?
+        ORDER BY created_at ASC
+        """,
+        (topic_id, difficulty),
     ).fetchall()
     return [_row_to_question(r) for r in rows]
 
@@ -470,6 +520,32 @@ def update_session_state(
         (question_stack, cleared_ids, session_id),
     )
     conn.commit()
+
+
+def delete_session(conn: sqlite3.Connection, session_id: str) -> int:
+    """
+    Permanently delete a session and every question generated for it.
+
+    Deletes all root questions (and their Hydra descendants) that were created
+    as part of this session, then removes the session row itself.
+
+    Returns the number of root questions deleted.
+    """
+    import json as _json
+
+    row = conn.execute(
+        "SELECT root_ids FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if row is None:
+        return 0
+
+    root_ids: list[int] = _json.loads(row["root_ids"]) if row["root_ids"] else []
+    for qid in root_ids:
+        delete_question(conn, qid)
+
+    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    return len(root_ids)
 
 
 def complete_session(conn: sqlite3.Connection, session_id: str) -> None:

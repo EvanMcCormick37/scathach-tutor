@@ -18,3 +18,4 @@ icon.jpg
 *.exe
 *.msi
 *.spec
+api/

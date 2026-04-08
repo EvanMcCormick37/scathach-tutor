@@ -28,17 +28,6 @@ Every question you clear gets scheduled for future review using an FSRS-based al
 Sessions are saved to the database after every question. If you quit mid-session with Ctrl+C, the session is preserved and can be resumed exactly where you left off.
 
 ---
-
-## Installation
-
-### Windows executable (no Python required)
-
-1. Download the latest `.exe` files from the [Releases](https://github.com/your-username/scathach-tutor/releases) page.
-2. Place them in a folder of your choice and run `scathach.exe`.
-3. On first launch, open the config menu and enter your [OpenRouter](https://openrouter.ai) API key when prompted. That's it — no `.env` file or terminal setup needed.
-
----
-
 ### Install from source
 
 **Prerequisites:**

@@ -31,6 +31,16 @@ Sessions are saved to the database after every question. If you quit mid-session
 
 ## Installation
 
+### Windows executable (no Python required)
+
+1. Download the latest `.exe` files from the [Releases](https://github.com/your-username/scathach-tutor/releases) page.
+2. Place them in a folder of your choice and run `scathach.exe`.
+3. On first launch, open the config menu and enter your [OpenRouter](https://openrouter.ai) API key when prompted. That's it — no `.env` file or terminal setup needed.
+
+---
+
+### Install from source
+
 **Prerequisites:**
 - Python 3.11 or later
 - An [OpenRouter](https://openrouter.ai) API key (free tier is sufficient for the default model)

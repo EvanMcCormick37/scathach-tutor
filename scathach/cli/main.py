@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from scathach import __version__
-from scathach.config import settings
+from scathach.config import CONFIG_DIR, settings
 from scathach.core.question import TimingMode
 from scathach.core.session import SessionConfig, SessionRunner
 from scathach.db.repository import (
@@ -107,14 +107,14 @@ _BANNER = """
   └─────────────────────────────────────────┘[/bold cyan]
 
 Quick start:
-  [bold]scathach ingest[/bold]                  Ingest all new docs from [dim]./docs/[/dim]
+  [bold]scathach ingest[/bold]                  Ingest all new docs from [dim]~/.scathach/docs/[/dim]
   [bold]scathach ingest[/bold] [dim]<file>[/dim]           Ingest a specific document
   [bold]scathach session[/bold] [dim]<topic>[/dim]         Start a learning session
   [bold]scathach review[/bold]                  Review due level 1–2 questions
   [bold]scathach super-review[/bold]            Review due level 3–6 questions
   [bold]scathach stats[/bold]                   View progress dashboard
 
-Tip: drop documents into [bold]./docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
+Tip: drop documents into [bold]~/.scathach/docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
 """
 
 
@@ -145,7 +145,7 @@ def main(
 # ---------------------------------------------------------------------------
 
 
-_DOCS_DIR = Path("docs")
+_DOCS_DIR = CONFIG_DIR / "docs"
 _SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".txt", ".md", ".markdown", ".rst"}
 
 
@@ -154,7 +154,7 @@ def ingest(
     path: Optional[str] = typer.Argument(
         None,
         help="Path to a document (PDF, DOCX, PPTX, TXT, MD) to ingest. "
-             "If omitted, all new documents in ./docs/ are ingested automatically.",
+             "If omitted, all new documents in ~/.scathach/docs/ are ingested automatically.",
     ),
     name: Optional[str] = typer.Option(
         None, "--name", "-n", help="Custom topic name (defaults to filename). Only used with a file path argument."
@@ -165,7 +165,7 @@ def ingest(
 ) -> None:
     """Ingest documents into scathach.
 
-    With no arguments, scans [bold]./docs/[/] for any files not yet ingested and
+    With no arguments, scans [bold]~/.scathach/docs/[/] for any files not yet ingested and
     imports them all. Drop files into that folder and run [bold]scathach ingest[/]
     to pick them up.
 
@@ -201,11 +201,11 @@ def ingest(
 
 
 def _ingest_docs_folder(conn) -> None:
-    """Scan ./docs/ for supported files not yet ingested and import them."""
+    """Scan ~/.scathach/docs/ for supported files not yet ingested and import them."""
     if not _DOCS_DIR.exists():
         console.print(
-            f"[yellow]Docs folder [bold]{_DOCS_DIR.resolve()}[/bold] not found.[/yellow]\n"
-            "Create a [bold]docs/[/bold] folder in your working directory and drop "
+            f"[yellow]Docs folder [bold]{_DOCS_DIR}[/bold] not found.[/yellow]\n"
+            "Create a [bold]~/.scathach/docs/[/bold] folder and drop "
             "documents into it, then run [bold]scathach ingest[/bold] again."
         )
         return

@@ -1,16 +1,30 @@
 # scathach
 
-A spaced-repetition, LLM-powered terminal learning application. Drop in a document, and scathach generates adaptive questions, drills you on them, and schedules review sessions so the material actually sticks.
+A Terminal-based adaptive learning + spaced repetition application. Drop in a document, and scathach generates comprehension questions, drills you on them, and schedules review sessions so the material actually sticks.
 
 ---
 
 ## How it works
 
 ### 1. Ingest a document
-scathach reads your source material — PDF, DOCX, PPTX, Markdown, plain text, and more — and stores it as a **topic** in a local SQLite database.
+Start by linking a document source-path — it can be either a filepath or a URL. Scathach reads the source material — PDF, DOCX, PPTX, Markdown, plain text, and more — and stores it as a **topic** in a lightweight local SQLite database.
 
 ### 2. Start a learning session
-When you start a session, an LLM generates **6 open-ended questions** from the topic, one per difficulty level (1 = recall, 6 = synthesis). You type your answers in the terminal. Each answer is scored 0–10 by the LLM against the source material.
+When you start a session, Scathach generates a **open-ended questions** from the topic at **up to six different difficulty levels**.
+  1. Single definition or fact. Answerable in a single word or phrase. (~30 seconds of thought)
+     *e.g. What is the atomic number of oxygen?*
+  2. Single concept. Answerable in one sentence. (~1 minute of thought)
+     *e.g. What does an oxidizing agent do?*
+  3. Complex concept or synthesis of simple concepts. Answerable in a single paragraph (~5 minutes of thought)
+     *e.g. What methods can researchers use to determine the oxidation state of a compound?*
+  4. Synthesis of multiple concepts across an entire section of the document. Answerable in a single paragraph (~10 minutes of thought)
+     *e.g. Explain why cellular organisms must take advantage of Redox reactions to maintain homeostasis*
+  5. Synthesis of multiple concepts across a large portion of the document, requiring outside domain knowledge. Answerable in a short essay (~20 minutes of thought,
+     *e.g. Explain the various metabolic pathways which exist in anaerobic environments, and explain why cellular life generally prefers aerobic pathways when they are available.*
+  6. Synthesis of the entire document, requiring deep domain expertise in addition to document comprehension. Answerable in a long essay (~1 hour of thought)
+     *e.g. Someone believes that they have discovered a new anaerobic respiratory pathway. Outline a plan to test their hypothesized pathway. How would you ensure that it is not aerobic, and how would you differentiate it from the anaerobic respiratory pathways listed in this document?*
+     
+By default, Scathach only generates questions up to **levle 4**. You type your answers in the terminal. Each answer is scored 0–10 by the tutor against the source material.
 
 ### 3. The 'Hydra Protocol'
 If you fail a question, scathach spawns **3 targeted sub-questions** that address the specific gap in your understanding diagnosed by the scorer. Clear the sub-questions and you return to the parent question. The tree can branch multiple levels deep.
@@ -21,12 +35,11 @@ Sessions can be run timed or untimed. In timed mode, each question has a time li
 ### 5. Spaced repetition
 Every question you clear gets scheduled for future review using an FSRS-based algorithm. Two review commands keep your knowledge fresh:
 
-- **`review`** — short-answer questions (levels 1–2), due questions only
+- **`review`** — short-answer questions (levels 1–2), due questions only **FSRS Spaced Repetition Algorithm**
 - **`super-review`** — long-answer questions (levels 3–6), worst performers first, optionally with Hydra subquestion generation.
 
 ### 6. Session persistence
 Sessions are saved to the database after every question. If you quit mid-session with Ctrl+C, the session is preserved and can be resumed exactly where you left off.
-
 ---
 ### Install from source
 
@@ -85,8 +98,8 @@ scathach stats
 
 | Command | Description |
 |---|---|
-| `scathach ingest [path]` | Ingest a document or all docs in `./docs/` |
-| `scathach session <topic>` | Start a new learning session |
+| `scathach ingest [srcpath]` | Ingest a document or all docs in `.scathach/docs/` if no srcpath is given |
+| `scathach session <topic>` | Start a new learning session for a given topic|
 | `scathach session --list` | List all unfinished sessions |
 | `scathach session --resume <id>` | Resume an interrupted session |
 | `scathach review` | Review due level 1–2 questions |

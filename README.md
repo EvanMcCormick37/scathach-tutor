@@ -39,8 +39,8 @@ Every question you clear gets scheduled for future review using an FSRS-based al
 - **`super-review`** — long-answer questions (levels 3–6), worst performers first, optionally with Hydra subquestion generation.
 
 ### 6. Session persistence
-
 Sessions are saved to the database after every question. If you quit mid-session with Ctrl+C, the session is preserved and can be resumed exactly where you left off.
+
 ---
 ### Install from source
 

@@ -148,7 +148,7 @@ def render_question_generation_prompt(
 
 _HYDRA_SYSTEM = """\
 You are a rigorous academic tutor. A student has failed to adequately answer a question, \
-revealing specific conceptual gaps. Your task is to generate exactly 3 targeted sub-questions \
+revealing specific conceptual gaps. Your task is to generate exactly {count} targeted sub-questions \
 that directly address those gaps, helping the student build the foundational understanding \
 needed to answer the original question.
 
@@ -157,7 +157,7 @@ Expected answer format at this level: {answer_descriptor}
 
 For each sub-question you MUST also provide an ideal 10/10 answer.
 
-Respond with ONLY a valid JSON array of exactly 3 objects:
+Respond with ONLY a valid JSON array of exactly {count} objects:
 [
   {{
     "difficulty": {target_difficulty},
@@ -180,7 +180,7 @@ Student's answer:
 Diagnosis of conceptual gaps:
 {diagnosis}
 {prior_section}
-Generate 3 sub-questions at difficulty level {target_difficulty} that address these gaps."""
+Generate {count} sub-questions at difficulty level {target_difficulty} that address these gaps."""
 
 _HYDRA_PRIOR_SECTION = """\
 
@@ -197,6 +197,7 @@ def render_hydra_prompt(
     diagnosis: str,
     target_difficulty: int,
     existing_questions: "list[Question] | None" = None,
+    count: int = 3,
 ) -> tuple[str, str]:
     """
     Render the Hydra sub-question generation prompts.
@@ -210,12 +211,14 @@ def render_hydra_prompt(
         existing_questions: All questions for this topic at `target_difficulty`
                             (root and sub); embedded so the LLM avoids duplicates
                             across the entire document, not just this parent.
+        count:              Number of sub-questions to request from the LLM.
 
     Returns:
         (system_prompt, user_prompt)
     """
     dl = DifficultyLevel.from_int(target_difficulty)
     system = _HYDRA_SYSTEM.format(
+        count=count,
         target_difficulty=target_difficulty,
         target_label=dl.label,
         answer_descriptor=dl.answer_descriptor,
@@ -227,6 +230,7 @@ def render_hydra_prompt(
             target_difficulty=target_difficulty, bodies=bodies
         )
     user = _HYDRA_USER.format(
+        count=count,
         parent_difficulty=parent_difficulty,
         parent_body=parent_body,
         student_answer=student_answer,

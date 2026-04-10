@@ -29,7 +29,7 @@ from scathach.db.repository import (
     rename_topic,
 )
 from scathach.db.schema import open_db
-from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_text
+from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_text, ingest_url
 from scathach.llm.client import make_client
 
 app = typer.Typer(
@@ -47,7 +47,15 @@ console = Console()
 
 
 def open_document(path: str | Path) -> None:
-    """Open a file with the system's default application (platform-agnostic)."""
+    """Open a file or URL with the system's default application (platform-agnostic)."""
+    path_str = str(path)
+    if path_str.startswith(("http://", "https://")):
+        import webbrowser
+        try:
+            webbrowser.open(path_str)
+        except Exception as exc:
+            console.print(f"[yellow]Could not open URL: {exc}[/yellow]")
+        return
     p = Path(path)
     if not p.exists():
         console.print(f"[yellow]Source file not found at {p} — skipping document open.[/yellow]")
@@ -158,10 +166,13 @@ def ingest(
              "If omitted, all new documents in ~/.scathach/docs/ are ingested automatically.",
     ),
     name: Optional[str] = typer.Option(
-        None, "--name", "-n", help="Custom topic name (defaults to filename). Only used with a file path argument."
+        None, "--name", "-n", help="Custom topic name. Defaults to filename, page title, or URL hostname."
     ),
     paste: bool = typer.Option(
         False, "--paste", "-p", help="Paste raw text instead of providing a file path."
+    ),
+    url: Optional[str] = typer.Option(
+        None, "--url", "-u", help="URL of a web page or PDF to fetch and ingest."
     ),
 ) -> None:
     """Ingest documents into scathach.
@@ -170,9 +181,14 @@ def ingest(
     imports them all. Drop files into that folder and run [bold]scathach ingest[/]
     to pick them up.
 
-    Pass a specific file path to ingest just that document, or use [bold]--paste[/]
-    to type/paste raw text directly.
+    Pass a specific file path to ingest just that document, use [bold]--paste[/]
+    to type/paste raw text directly, or use [bold]--url[/] to fetch a web page.
     """
+    mode_count = sum([paste, path is not None, url is not None])
+    if mode_count > 1:
+        console.print("[red]Use only one of: a file path argument, --paste, or --url.[/red]")
+        raise typer.Exit(code=1)
+
     conn = open_db(settings.db_path)
     try:
         if paste:
@@ -182,6 +198,13 @@ def ingest(
             text = sys.stdin.read()
             topic = ingest_text(conn, text, topic_name=name)
             console.print(f"[green]Ingested topic '{topic.name}' (id={topic.id}) from pasted text.[/]")
+
+        elif url is not None:
+            with console.status(f"[cyan]Fetching {url}…[/]"):
+                topic = ingest_url(conn, url, topic_name=name)
+            console.print(
+                f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}) from URL.[/]"
+            )
 
         elif path is not None:
             with console.status(f"[cyan]Ingesting {Path(path).name}…[/]"):
@@ -459,6 +482,7 @@ def session(
                 timing=timing_mode,
                 threshold=rec.threshold,
                 num_levels=rec.num_levels,
+                hydra_spawn_count=settings.hydra_spawn_count,
             )
             llm_client = make_client(
                 api_key=settings.openrouter_api_key,
@@ -505,6 +529,7 @@ def session(
             timing=timing_mode,
             threshold=threshold or settings.quality_threshold,
             num_levels=levels or 6,
+            hydra_spawn_count=settings.hydra_spawn_count,
         )
 
         if wizard:
@@ -618,6 +643,7 @@ def super_review(
             conn=conn, client=llm_client, queue=queue,
             timing=timing_mode, threshold=settings.quality_threshold,
             limit=limit, hydra_enabled=hydra_enabled,
+            hydra_spawn_count=settings.hydra_spawn_count,
             on_failed=settings.on_failed_review,
         ))
     finally:
@@ -670,6 +696,7 @@ def config_cmd(
         table.add_row("Review timing", settings.review_timing.value)
         table.add_row("Quality threshold", str(settings.quality_threshold))
         table.add_row("Hydra in super-review", str(settings.hydra_in_super_review))
+        table.add_row("Hydra spawn count", str(settings.hydra_spawn_count))
         table.add_row("On failed review", settings.on_failed_review.value)
         table.add_row("Open doc on session", str(settings.open_doc_on_session))
         table.add_row("DB path", str(settings.db_path))

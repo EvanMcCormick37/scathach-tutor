@@ -75,6 +75,12 @@ class Settings(BaseSettings):
         default=False,
         description="Whether the Hydra Protocol is enabled during super-review sessions.",
     )
+    hydra_spawn_count: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Number of sub-questions spawned per failure by the Hydra Protocol.",
+    )
     on_failed_review: OnFailedReview = Field(
         default=OnFailedReview.CHOOSE,
         description=(

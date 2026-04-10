@@ -195,6 +195,7 @@ class SessionConfig:
     timing: TimingMode = TimingMode.UNTIMED
     threshold: int = 7
     num_levels: int = 6
+    hydra_spawn_count: int = 3
 
 
 class SessionRunner:
@@ -429,6 +430,7 @@ class SessionRunner:
                             parent_question=question,
                             student_answer=answer_text,
                             diagnosis=diagnosis,
+                            count=self.config.hydra_spawn_count,
                         )
                     except HydraError:
                         # If Hydra fails, just re-queue the same question

@@ -1,8 +1,9 @@
 """
 Hydra Protocol — sub-question spawning.
 
-When a student fails a question, `spawn_subquestions` generates 3 easier
-targeted sub-questions to build foundational understanding before retrying.
+When a student fails a question, `spawn_subquestions` generates a configurable
+number of easier targeted sub-questions to build foundational understanding
+before retrying (default: 3).
 """
 
 from __future__ import annotations
@@ -26,9 +27,10 @@ async def spawn_subquestions(
     parent_question: Question,
     student_answer: str,
     diagnosis: str,
+    count: int = 3,
 ) -> list[Question]:
     """
-    Spawn 3 sub-questions targeting the diagnosed gaps in understanding.
+    Spawn sub-questions targeting the diagnosed gaps in understanding.
 
     Args:
         conn:            Open SQLite connection.
@@ -36,9 +38,10 @@ async def spawn_subquestions(
         parent_question: The question the student failed.
         student_answer:  The student's failing answer text.
         diagnosis:       Conceptual gap diagnosis from the scorer.
+        count:           Number of sub-questions to generate (default: 3).
 
     Returns:
-        List of 3 Question objects with ids set and parent_id = parent_question.id.
+        List of Question objects with ids set and parent_id = parent_question.id.
 
     Raises:
         HydraError: If sub-question generation fails after retry.
@@ -59,6 +62,7 @@ async def spawn_subquestions(
         diagnosis=diagnosis,
         target_difficulty=target_difficulty,
         existing_questions=existing_at_level or None,
+        count=count,
     )
 
     raw_response: str | None = None
@@ -87,8 +91,8 @@ async def spawn_subquestions(
     if parsed is None:
         raise HydraError("Sub-question generation produced no output.")
 
-    # Take up to 3 questions; if LLM returns more or fewer, handle gracefully
-    parsed = parsed[:3]
+    # Take up to `count` questions; if LLM returns more or fewer, handle gracefully
+    parsed = parsed[:count]
 
     questions: list[Question] = []
     for q_data in parsed:

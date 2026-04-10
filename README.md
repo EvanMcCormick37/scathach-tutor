@@ -22,7 +22,7 @@ When you start a session, Scathach generates a **open-ended questions** from the
   5. Synthesis of multiple concepts across a large portion of the document, requiring outside domain knowledge. Answerable in a short essay (~20 minutes of thought,
      *e.g. Explain the various metabolic pathways which exist in anaerobic environments, and explain why cellular life generally prefers aerobic pathways when they are available.*
   6. Synthesis of the entire document, requiring deep domain expertise in addition to document comprehension. Answerable in a long essay (~1 hour of thought)
-     *e.g. Someone believes that they have discovered a new anaerobic respiratory pathway. Outline a plan to test their hypothesized pathway. How would you ensure that it is not aerobic, and how would you differentiate it from the anaerobic respiratory pathways listed in this document?*
+     *e.g. Someone believes that they have discovered a new anaerobic respiratory pathway. Outline a plan to test their hypothesized pathway. How would you distinguish it from the anaerobic respiratory pathways listed in this document?*
      
 By default, Scathach only generates questions up to **levle 4**. You type your answers in the terminal. Each answer is scored 0–10 by the tutor against the source material.
 

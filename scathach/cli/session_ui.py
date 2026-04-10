@@ -91,8 +91,8 @@ class TossQuestion(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _difficulty_stars(level: int) -> str:
-    return "★" * level + "☆" * (6 - level)
+def _difficulty_stars(level: int, total: int = 6) -> str:
+    return "★" * level + "☆" * (total - level)
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +302,7 @@ def pre_session_wizard(defaults: SessionConfig) -> SessionConfig:
         timing=timing,
         threshold=threshold,
         num_levels=num_levels,
+        hydra_spawn_count=defaults.hydra_spawn_count,
     )
 
 
@@ -340,7 +341,7 @@ def _render_question(event: QuestionPresented) -> None:
     depth_label = f"[Hydra depth {event.depth}] Parent" if event.depth > 0 else ""
     title = (
         f"{depth_label}Question {event.index}/{event.total} — "
-        f"Difficulty {_difficulty_stars(event.question.difficulty)} ({dl.label})"
+        f"Difficulty {_difficulty_stars(event.question.difficulty, event.total)} ({dl.label})"
     )
     console.print()
     console.print(Panel(
@@ -388,7 +389,8 @@ def _colorize_score(score: int) -> str:
 
 def _render_hydra(event: HydraSpawned) -> None:
     n = len(event.subquestions)
-    console.print(f"\n[cyan bold]🐍 Hydra Protocol:[/cyan bold] {n} sub-question{'s' if n != 1 else ''} spawned at difficulty {_difficulty_stars(event.subquestions[0].difficulty if event.subquestions else 1)}")
+    sub_difficulty = event.subquestions[0].difficulty if event.subquestions else 1
+    console.print(f"\n[cyan bold]🐍 Hydra Protocol:[/cyan bold] {n} sub-question{'s' if n != 1 else ''} spawned at difficulty {_difficulty_stars(sub_difficulty, event.num_levels)}")
     console.print("[dim]Answer these to build understanding before retrying the parent question.[/dim]")
 
 

@@ -171,6 +171,7 @@ class HydraSpawning(SessionEvent):
 class HydraSpawned(SessionEvent):
     subquestions: list[Question]
     parent_question: Question
+    num_levels: int = 6
 
 
 @dataclass
@@ -439,6 +440,7 @@ class SessionRunner:
                     await self.event_handler(HydraSpawned(
                         subquestions=subquestions,
                         parent_question=question,
+                        num_levels=self.config.num_levels,
                     ))
 
                     # Move the failed question to the end of its group (will retry after sub-questions)

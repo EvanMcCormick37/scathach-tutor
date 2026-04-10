@@ -122,7 +122,12 @@ def ingest_url(
         raise IngestionError("httpx is not installed. Run: pip install httpx") from exc
 
     try:
-        response = httpx.get(url, follow_redirects=True, timeout=30)
+        response = httpx.get(
+            url,
+            follow_redirects=True,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+        )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise IngestionError(

@@ -32,8 +32,8 @@ from scathach.db.repository import (
     upsert_review_entry,
 )
 from scathach.db.models import ReviewEntry
-from scathach.llm.client import LLMClient
-from scathach.llm.parsing import ParseError, parse_questions_response
+from scathach.llm.client import LLMClient, LLMError
+from scathach.llm.parsing import ParseError, QUESTIONS_RESPONSE_SCHEMA, validate_questions_response
 from scathach.llm.prompts import render_question_generation_prompt
 
 
@@ -68,32 +68,15 @@ async def generate_root_questions(
         prior_questions=prior_questions or None,
     )
 
-    raw_response: str | None = None
-    parsed: list[dict] | None = None
-
-    for attempt in range(2):
-        try:
-            raw_response = await client.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-            parsed = parse_questions_response(raw_response)
-            break
-        except ParseError as exc:
-            if attempt == 0:
-                user_prompt = (
-                    user_prompt
-                    + "\n\nIMPORTANT: Your previous response could not be parsed. "
-                    "Respond with ONLY the raw JSON array, no other text."
-                )
-                continue
-            raise GenerationError(
-                f"LLM returned unparseable question generation response after retry. "
-                f"Parse error: {exc}\nRaw (truncated):\n{(raw_response or '')[:500]}"
-            ) from exc
-
-    if parsed is None:
-        raise GenerationError("Question generation produced no output.")
+    try:
+        result = await client.generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=QUESTIONS_RESPONSE_SCHEMA,
+        )
+        parsed = validate_questions_response(result)
+    except (LLMError, ParseError) as exc:
+        raise GenerationError(f"Question generation failed: {exc}") from exc
 
     parsed = [q for q in parsed if 1 <= q["difficulty"] <= num_levels]
     parsed.sort(key=lambda q: q["difficulty"])
@@ -196,7 +179,6 @@ class SessionConfig:
     timing: TimingMode = TimingMode.UNTIMED
     threshold: int = 7
     num_levels: int = 6
-    hydra_spawn_count: int = 3
 
 
 class SessionRunner:
@@ -431,7 +413,6 @@ class SessionRunner:
                             parent_question=question,
                             student_answer=answer_text,
                             diagnosis=diagnosis,
-                            count=self.config.hydra_spawn_count,
                         )
                     except HydraError:
                         # If Hydra fails, just re-queue the same question

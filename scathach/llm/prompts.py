@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 QUESTION_GENERATION_PROMPT_VERSION = "1.0"
-HYDRA_PROMPT_VERSION = "1.0"
+HYDRA_PROMPT_VERSION = "2.0"
 SCORING_PROMPT_VERSION = "1.0"
 
 # ---------------------------------------------------------------------------
@@ -148,19 +148,31 @@ def render_question_generation_prompt(
 
 _HYDRA_SYSTEM = """\
 You are a rigorous academic tutor. A student has failed to adequately answer a question, \
-revealing specific conceptual gaps. Your task is to generate exactly {count} targeted sub-questions \
-that directly address those gaps, helping the student build the foundational understanding \
-needed to answer the original question.
+revealing specific conceptual gaps. Your task is to generate a targeted set of 1–5 \
+sub-questions that are collectively necessary and sufficient for the student to build the \
+understanding required to answer the original question.
 
-Sub-question difficulty level: {target_difficulty} ({target_label})
-Expected answer format at this level: {answer_descriptor}
+You have full latitude to choose:
+  - How many sub-questions to generate (between 1 and 5, inclusive).
+  - What difficulty level to assign each sub-question (any level strictly below the \
+original question's level).
 
-For each sub-question you MUST also provide an ideal 10/10 answer.
+Design your sub-question set as a minimal diagnostic scaffold: ask precisely what the student \
+needs to understand, nothing more. If the diagnosis reveals that the student is missing a \
+single basic definition that underlies the whole answer, one level-1 question may be \
+sufficient. If the gaps are broader or span multiple concepts, include questions at \
+multiple levels.
 
-Respond with ONLY a valid JSON array of exactly {count} objects:
+Difficulty rubric for the levels available to you:
+{rubric}
+
+For each sub-question you MUST also provide an ideal 10/10 answer whose length and depth \
+match the assigned difficulty level.
+
+Respond with ONLY a valid JSON array of 1–5 objects:
 [
   {{
-    "difficulty": {target_difficulty},
+    "difficulty": <integer strictly less than {parent_difficulty}>,
     "body": "<the sub-question text>",
     "ideal_answer": "<the ideal answer text>"
   }},
@@ -168,10 +180,10 @@ Respond with ONLY a valid JSON array of exactly {count} objects:
 ]
 
 Do not include any text outside the JSON array. Do not use markdown code fences. \
-All sub-questions must directly address the diagnosed conceptual gaps."""
+Every sub-question must have difficulty strictly less than {parent_difficulty}."""
 
 _HYDRA_USER = """\
-Original question (difficulty {parent_difficulty}):
+Original question (difficulty {parent_difficulty} — {parent_label}):
 {parent_body}
 
 Student's answer:
@@ -180,14 +192,36 @@ Student's answer:
 Diagnosis of conceptual gaps:
 {diagnosis}
 {prior_section}
-Generate {count} sub-questions at difficulty level {target_difficulty} that address these gaps."""
+Generate 1–5 sub-questions at difficulty levels 1–{max_target} that are collectively \
+necessary and sufficient to give the student what they need to answer the original question."""
 
 _HYDRA_PRIOR_SECTION = """\
 
-The following level {target_difficulty} questions already exist for this document — \
+The following questions already exist for this document at levels 1–{max_target} — \
 DO NOT repeat or closely paraphrase any of them:
-{bodies}
+{per_level_blocks}
 """
+
+_HYDRA_PRIOR_LEVEL_BLOCK = """\
+[Level {level} — {label}]
+{bodies}"""
+
+
+def _format_hydra_prior_questions(existing: "list[Question]") -> str:
+    """Format existing sub-level questions into a grouped deduplication block."""
+    from collections import defaultdict
+    by_level: dict[int, list[str]] = defaultdict(list)
+    for q in existing:
+        by_level[q.difficulty].append(q.body)
+
+    blocks: list[str] = []
+    for level in sorted(by_level):
+        dl = DifficultyLevel.from_int(level)
+        bodies = "\n".join(f"- {body}" for body in by_level[level])
+        blocks.append(_HYDRA_PRIOR_LEVEL_BLOCK.format(
+            level=level, label=dl.label, bodies=bodies
+        ))
+    return blocks
 
 
 def render_hydra_prompt(
@@ -195,47 +229,55 @@ def render_hydra_prompt(
     parent_difficulty: int,
     student_answer: str,
     diagnosis: str,
-    target_difficulty: int,
     existing_questions: "list[Question] | None" = None,
-    count: int = 3,
 ) -> tuple[str, str]:
     """
     Render the Hydra sub-question generation prompts.
+
+    The LLM selects both the number (1–5) and difficulty levels of sub-questions.
+    All sub-questions must have difficulty strictly less than parent_difficulty.
 
     Args:
         parent_body:        The question the student failed.
         parent_difficulty:  Difficulty of the parent question (1–6).
         student_answer:     The student's failing answer text.
         diagnosis:          LLM-generated diagnosis of conceptual gaps.
-        target_difficulty:  Difficulty for sub-questions (max(1, parent - 1)).
-        existing_questions: All questions for this topic at `target_difficulty`
-                            (root and sub); embedded so the LLM avoids duplicates
-                            across the entire document, not just this parent.
-        count:              Number of sub-questions to request from the LLM.
+        existing_questions: All questions for this topic with difficulty <
+                            parent_difficulty; embedded for deduplication.
 
     Returns:
         (system_prompt, user_prompt)
     """
-    dl = DifficultyLevel.from_int(target_difficulty)
-    system = _HYDRA_SYSTEM.format(
-        count=count,
-        target_difficulty=target_difficulty,
-        target_label=dl.label,
-        answer_descriptor=dl.answer_descriptor,
+    max_target = parent_difficulty - 1
+    rubric = "\n".join(
+        f"  Level {d.level} ({d.label}): {d.answer_descriptor}. "
+        f"Time limit: {d.time_limit_s // 60} min {d.time_limit_s % 60} s."
+        for d in DifficultyLevel
+        if d.level < parent_difficulty
     )
+    parent_label = DifficultyLevel.from_int(parent_difficulty).label
+
+    system = _HYDRA_SYSTEM.format(
+        rubric=rubric,
+        parent_difficulty=parent_difficulty,
+    )
+
     prior_section = ""
     if existing_questions:
-        bodies = "\n".join(f"- {q.body}" for q in existing_questions)
-        prior_section = _HYDRA_PRIOR_SECTION.format(
-            target_difficulty=target_difficulty, bodies=bodies
-        )
+        level_blocks = _format_hydra_prior_questions(existing_questions)
+        if level_blocks:
+            prior_section = _HYDRA_PRIOR_SECTION.format(
+                max_target=max_target,
+                per_level_blocks="\n".join(level_blocks),
+            )
+
     user = _HYDRA_USER.format(
-        count=count,
         parent_difficulty=parent_difficulty,
+        parent_label=parent_label,
         parent_body=parent_body,
         student_answer=student_answer,
         diagnosis=diagnosis,
-        target_difficulty=target_difficulty,
+        max_target=max_target,
         prior_section=prior_section,
     )
     return system, user

@@ -1,9 +1,11 @@
 """
 Hydra Protocol — sub-question spawning.
 
-When a student fails a question, `spawn_subquestions` generates a configurable
-number of easier targeted sub-questions to build foundational understanding
-before retrying (default: 3).
+When a student fails a question, `spawn_subquestions` asks the tutor LLM to
+generate a set of 1–5 sub-questions at any difficulty levels strictly below the
+parent question. The LLM selects the number and difficulty levels such that
+answering all sub-questions gives the student the understanding needed to answer
+the parent question.
 """
 
 from __future__ import annotations
@@ -11,9 +13,9 @@ from __future__ import annotations
 import sqlite3
 
 from scathach.db.models import Question
-from scathach.db.repository import get_questions_by_difficulty, insert_question
-from scathach.llm.client import LLMClient
-from scathach.llm.parsing import ParseError, parse_questions_response
+from scathach.db.repository import get_questions_below_difficulty, insert_question
+from scathach.llm.client import LLMClient, LLMError
+from scathach.llm.parsing import ParseError, QUESTIONS_RESPONSE_SCHEMA, validate_questions_response
 from scathach.llm.prompts import render_hydra_prompt
 
 
@@ -27,10 +29,14 @@ async def spawn_subquestions(
     parent_question: Question,
     student_answer: str,
     diagnosis: str,
-    count: int = 3,
 ) -> list[Question]:
     """
     Spawn sub-questions targeting the diagnosed gaps in understanding.
+
+    The LLM chooses both the number (1–5) and the difficulty level of each
+    sub-question. Every sub-question will have difficulty strictly less than
+    parent_question.difficulty. Any questions returned by the LLM that violate
+    this constraint are silently discarded.
 
     Args:
         conn:            Open SQLite connection.
@@ -38,7 +44,6 @@ async def spawn_subquestions(
         parent_question: The question the student failed.
         student_answer:  The student's failing answer text.
         diagnosis:       Conceptual gap diagnosis from the scorer.
-        count:           Number of sub-questions to generate (default: 3).
 
     Returns:
         List of Question objects with ids set and parent_id = parent_question.id.
@@ -49,10 +54,12 @@ async def spawn_subquestions(
     if parent_question.id is None:
         raise HydraError("Parent question has no id — must be persisted before spawning.")
 
-    target_difficulty = max(1, parent_question.difficulty - 1)
+    if parent_question.difficulty <= 1:
+        # Cannot spawn sub-questions below difficulty 1.
+        return []
 
-    existing_at_level = get_questions_by_difficulty(
-        conn, parent_question.topic_id, target_difficulty
+    existing_below = get_questions_below_difficulty(
+        conn, parent_question.topic_id, parent_question.difficulty
     )
 
     system_prompt, user_prompt = render_hydra_prompt(
@@ -60,39 +67,21 @@ async def spawn_subquestions(
         parent_difficulty=parent_question.difficulty,
         student_answer=student_answer,
         diagnosis=diagnosis,
-        target_difficulty=target_difficulty,
-        existing_questions=existing_at_level or None,
-        count=count,
+        existing_questions=existing_below or None,
     )
 
-    raw_response: str | None = None
-    parsed: list[dict] | None = None
+    try:
+        result = await client.generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=QUESTIONS_RESPONSE_SCHEMA,
+        )
+        parsed = validate_questions_response(result)
+    except (LLMError, ParseError) as exc:
+        raise HydraError(f"Sub-question generation failed: {exc}") from exc
 
-    for attempt in range(2):
-        try:
-            raw_response = await client.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-            parsed = parse_questions_response(raw_response)
-            break
-        except ParseError as exc:
-            if attempt == 0:
-                user_prompt = (
-                    user_prompt
-                    + "\n\nIMPORTANT: Respond with ONLY the raw JSON array, no other text."
-                )
-                continue
-            raise HydraError(
-                f"Sub-question generation returned unparseable response after retry. "
-                f"Parse error: {exc}\nRaw (truncated): {(raw_response or '')[:400]}"
-            ) from exc
-
-    if parsed is None:
-        raise HydraError("Sub-question generation produced no output.")
-
-    # Take up to `count` questions; if LLM returns more or fewer, handle gracefully
-    parsed = parsed[:count]
+    # Enforce the difficulty constraint.
+    parsed = [q for q in parsed if q["difficulty"] < parent_question.difficulty]
 
     questions: list[Question] = []
     for q_data in parsed:
@@ -101,7 +90,7 @@ async def spawn_subquestions(
             Question(
                 topic_id=parent_question.topic_id,
                 parent_id=parent_question.id,
-                difficulty=target_difficulty,
+                difficulty=q_data["difficulty"],
                 body=q_data["body"],
                 ideal_answer=q_data["ideal_answer"],
                 is_root=False,

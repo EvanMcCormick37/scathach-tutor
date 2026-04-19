@@ -147,7 +147,6 @@ async def run_super_review_session(
     threshold: int,
     limit: int = 10,
     hydra_enabled: bool = False,
-    hydra_spawn_count: int = 3,
     on_failed: OnFailedReview = OnFailedReview.CHOOSE,
 ) -> None:
     """
@@ -236,7 +235,6 @@ async def run_super_review_session(
                     parent_question=question,
                     student_answer=answer_text,
                     diagnosis=diagnosis,
-                    count=hydra_spawn_count,
                 )
                 if subquestions:
                     console.print(

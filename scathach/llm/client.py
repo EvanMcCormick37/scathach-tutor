@@ -8,8 +8,9 @@ Provides exponential-backoff retry on rate-limit (429) and server errors (503).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError
 
@@ -17,10 +18,8 @@ from scathach.llm.providers import ProviderConfig, get_provider
 
 logger = logging.getLogger(__name__)
 
-# How long to wait (in seconds) before each retry attempt
 _BACKOFF_BASE_S = 2.0
 _MAX_RETRIES = 3
-# HTTP status codes that warrant a retry
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
@@ -32,13 +31,9 @@ class LLMClient:
     """
     Async wrapper around the OpenAI SDK, configured for OpenRouter.
 
-    Usage::
-
-        client = LLMClient(api_key="sk-or-v1-...", model="moonshotai/kimi-k2")
-        response = await client.generate(
-            system_prompt="You are a tutor.",
-            user_prompt="Explain Newton's first law.",
-        )
+    Pass `response_schema` to `generate()` to enforce structured JSON output
+    via the API's response_format parameter. The response is then returned as
+    an already-parsed Python object (dict or list) rather than a raw string.
     """
 
     def __init__(
@@ -53,7 +48,7 @@ class LLMClient:
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            max_retries=0,  # We handle retries ourselves for finer control
+            max_retries=0,  # Retries handled here for finer control
         )
 
     @property
@@ -64,44 +59,59 @@ class LLMClient:
         self,
         system_prompt: str,
         user_prompt: str,
+        response_schema: dict[str, Any] | None = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-    ) -> str:
+    ) -> Any:
         """
-        Send a chat completion request and return the assistant's text response.
+        Send a chat completion request and return the assistant's response.
 
         Args:
-            system_prompt: The system role message.
-            user_prompt:   The user role message.
-            max_tokens:    Override the provider default.
-            temperature:   Override the provider default.
+            system_prompt:   The system role message.
+            user_prompt:     The user role message.
+            response_schema: A JSON Schema dict. When provided, `response_format`
+                             is set on the API call to enforce structured output.
+                             The response is returned as a parsed Python object
+                             (dict or list). When omitted, returns raw str.
+            max_tokens:      Override the provider default.
+            temperature:     Override the provider default.
 
         Returns:
-            The assistant's text content as a string.
+            Parsed Python object (dict | list) when response_schema is given,
+            otherwise the raw assistant text as str.
 
         Raises:
             LLMError: If all retries are exhausted or a non-retryable error occurs.
         """
-        effective_max_tokens = max_tokens or self._provider.max_tokens
-        effective_temperature = temperature if temperature is not None else self._provider.temperature
+        kwargs: dict[str, Any] = dict(
+            model=self._provider.model_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=max_tokens or self._provider.max_tokens,
+            temperature=temperature if temperature is not None else self._provider.temperature,
+        )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        if response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": response_schema,
+                },
+            }
 
         last_exc: Optional[Exception] = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = await self._client.chat.completions.create(
-                    model=self._provider.model_id,
-                    messages=messages,
-                    max_tokens=effective_max_tokens,
-                    temperature=effective_temperature,
-                )
+                response = await self._client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content
                 if content is None:
                     raise LLMError("LLM returned an empty response.")
+
+                if response_schema is not None:
+                    return json.loads(content)
                 return content
 
             except APIStatusError as exc:

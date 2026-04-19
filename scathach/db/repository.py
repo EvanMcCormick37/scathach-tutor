@@ -195,6 +195,23 @@ def get_questions_by_difficulty(
     return [_row_to_question(r) for r in rows]
 
 
+def get_questions_below_difficulty(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    max_difficulty_exclusive: int,
+) -> list[Question]:
+    """Return all questions (root and sub) for a topic with difficulty < max_difficulty_exclusive."""
+    rows = conn.execute(
+        """
+        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
+        FROM questions WHERE topic_id = ? AND difficulty < ?
+        ORDER BY difficulty ASC, created_at ASC
+        """,
+        (topic_id, max_difficulty_exclusive),
+    ).fetchall()
+    return [_row_to_question(r) for r in rows]
+
+
 def get_root_questions(conn: sqlite3.Connection, topic_id: int) -> list[Question]:
     """Return all root questions for a topic, ordered by difficulty."""
     rows = conn.execute(

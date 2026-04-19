@@ -302,7 +302,6 @@ def pre_session_wizard(defaults: SessionConfig) -> SessionConfig:
         timing=timing,
         threshold=threshold,
         num_levels=num_levels,
-        hydra_spawn_count=defaults.hydra_spawn_count,
     )
 
 

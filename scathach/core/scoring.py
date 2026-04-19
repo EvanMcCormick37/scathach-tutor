@@ -12,8 +12,8 @@ from typing import Optional
 
 from scathach.db.models import Attempt, Question
 from scathach.core.question import DifficultyLevel, TimerZone
-from scathach.llm.client import LLMClient
-from scathach.llm.parsing import ParseError, parse_score_response
+from scathach.llm.client import LLMClient, LLMError
+from scathach.llm.parsing import ParseError, SCORE_RESPONSE_SCHEMA, validate_score_response
 from scathach.llm.prompts import render_scoring_prompt
 
 
@@ -113,34 +113,17 @@ async def score_answer(
             )
             return attempt, "Answer auto-failed: time limit exceeded (> 2× base limit)."
 
-    # Call LLM for scoring — retry once on parse failure
-    raw_response: str | None = None
-    score_data: dict | None = None
-
-    for attempt_num in range(2):
-        try:
-            raw_response = await client.generate(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=256,
-                temperature=0.1,  # low temperature for consistent scoring
-            )
-            score_data = parse_score_response(raw_response)
-            break
-        except ParseError as exc:
-            if attempt_num == 0:
-                user_prompt = (
-                    user_prompt
-                    + "\n\nIMPORTANT: Respond with ONLY the raw JSON object, no other text."
-                )
-                continue
-            raise ScoringError(
-                f"LLM returned unparseable scoring response after retry. "
-                f"Parse error: {exc}\nRaw (truncated): {(raw_response or '')[:300]}"
-            ) from exc
-
-    if score_data is None:
-        raise ScoringError("Scoring produced no output.")
+    try:
+        result = await client.generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=SCORE_RESPONSE_SCHEMA,
+            max_tokens=256,
+            temperature=0.1,
+        )
+        score_data = validate_score_response(result)
+    except (LLMError, ParseError) as exc:
+        raise ScoringError(f"Scoring failed: {exc}") from exc
 
     raw_score: int = score_data["score"]
     diagnosis: str = score_data["diagnosis"]

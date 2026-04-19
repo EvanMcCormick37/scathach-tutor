@@ -482,7 +482,6 @@ def session(
                 timing=timing_mode,
                 threshold=rec.threshold,
                 num_levels=rec.num_levels,
-                hydra_spawn_count=settings.hydra_spawn_count,
             )
             llm_client = make_client(
                 api_key=settings.openrouter_api_key,
@@ -529,7 +528,6 @@ def session(
             timing=timing_mode,
             threshold=threshold or settings.quality_threshold,
             num_levels=levels or 6,
-            hydra_spawn_count=settings.hydra_spawn_count,
         )
 
         if wizard:
@@ -643,7 +641,6 @@ def super_review(
             conn=conn, client=llm_client, queue=queue,
             timing=timing_mode, threshold=settings.quality_threshold,
             limit=limit, hydra_enabled=hydra_enabled,
-            hydra_spawn_count=settings.hydra_spawn_count,
             on_failed=settings.on_failed_review,
         ))
     finally:
@@ -696,7 +693,6 @@ def config_cmd(
         table.add_row("Review timing", settings.review_timing.value)
         table.add_row("Quality threshold", str(settings.quality_threshold))
         table.add_row("Hydra in super-review", str(settings.hydra_in_super_review))
-        table.add_row("Hydra spawn count", str(settings.hydra_spawn_count))
         table.add_row("On failed review", settings.on_failed_review.value)
         table.add_row("Open doc on session", str(settings.open_doc_on_session))
         table.add_row("DB path", str(settings.db_path))

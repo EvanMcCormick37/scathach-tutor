@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 QUESTION_GENERATION_PROMPT_VERSION = "1.0"
 HYDRA_PROMPT_VERSION = "2.0"
 SCORING_PROMPT_VERSION = "1.0"
+DRILL_PROMPT_VERSION = "1.0"
 
 # ---------------------------------------------------------------------------
 # Difficulty rubric — embedded into the question generation prompt
@@ -355,5 +356,77 @@ def render_scoring_prompt(
         difficulty=difficulty,
         question_body=question_body,
         answer_text=answer_text,
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# Prompt 4: Drill Question Generation
+# ---------------------------------------------------------------------------
+
+_DRILL_SYSTEM = """\
+You are an academic tutor. Your task is to generate exactly {count} open-ended questions \
+from the provided document, all at difficulty level {level} ({label}): {answer_descriptor}.
+
+The {count} questions must cover distinct aspects of the material — do not repeat or closely \
+paraphrase each other. Each question must be independently answerable.
+
+For each question you MUST also provide an ideal 10/10 answer whose length and depth \
+match difficulty level {level}.
+
+Respond with ONLY a valid JSON array of exactly {count} objects:
+[
+  {{
+    "difficulty": {level},
+    "body": "<the question text>",
+    "ideal_answer": "<the ideal answer text>"
+  }},
+  ...
+]
+
+Do not include any text outside the JSON array. Do not use markdown code fences. \
+All questions must be grounded in the document content. \
+Every object must have "difficulty": {level}."""
+
+_DRILL_USER = """\
+Document content:
+---
+{document_content}
+---
+{prior_section}
+Generate {count} level-{level} questions with their ideal answers."""
+
+
+def render_drill_prompt(
+    document_content: str,
+    level: int,
+    count: int,
+    prior_questions: "list[Question] | None" = None,
+) -> tuple[str, str]:
+    """
+    Render drill question generation prompts: `count` questions all at `level`.
+
+    Args:
+        document_content: The document text to generate questions from.
+        level:            Difficulty level (1–6) for all questions.
+        count:            Number of questions to generate.
+        prior_questions:  Existing questions at this level; embedded for deduplication.
+
+    Returns:
+        (system_prompt, user_prompt)
+    """
+    dl = DifficultyLevel.from_int(level)
+    system = _DRILL_SYSTEM.format(
+        count=count,
+        level=level,
+        label=dl.label,
+        answer_descriptor=dl.answer_descriptor,
+    )
+    prior_section = _format_prior_questions(prior_questions) if prior_questions else ""
+    user = _DRILL_USER.format(
+        document_content=document_content,
+        count=count,
+        level=level,
+        prior_section=prior_section,
     )
     return system, user

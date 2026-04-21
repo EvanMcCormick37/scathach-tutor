@@ -8,12 +8,12 @@ Provides exponential-backoff retry on rate-limit (429) and server errors (503).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Optional
 
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError
 
+from scathach.llm.parsing import ParseError, extract_json
 from scathach.llm.providers import ProviderConfig, get_provider
 
 logger = logging.getLogger(__name__)
@@ -69,10 +69,11 @@ class LLMClient:
         Args:
             system_prompt:   The system role message.
             user_prompt:     The user role message.
-            response_schema: A JSON Schema dict. When provided, `response_format`
-                             is set on the API call to enforce structured output.
-                             The response is returned as a parsed Python object
-                             (dict or list). When omitted, returns raw str.
+            response_schema: When provided, the raw text response is parsed as
+                             JSON via extract_json() and returned as a Python
+                             object (dict or list). Omit to return raw str.
+                             NOTE: the schema is NOT sent to the API — it is used
+                             only as a signal to trigger client-side extraction.
             max_tokens:      Override the provider default.
             temperature:     Override the provider default.
 
@@ -93,15 +94,6 @@ class LLMClient:
             temperature=temperature if temperature is not None else self._provider.temperature,
         )
 
-        if response_schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "schema": response_schema,
-                },
-            }
-
         last_exc: Optional[Exception] = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -111,7 +103,10 @@ class LLMClient:
                     raise LLMError("LLM returned an empty response.")
 
                 if response_schema is not None:
-                    return json.loads(content)
+                    try:
+                        return extract_json(content)
+                    except ParseError as exc:
+                        raise LLMError(f"Failed to parse JSON from response: {exc}") from exc
                 return content
 
             except APIStatusError as exc:

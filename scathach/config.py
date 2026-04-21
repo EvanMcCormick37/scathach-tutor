@@ -21,10 +21,11 @@ ENV_FILE = CONFIG_DIR / ".env"
 
 
 class ModelProvider(str, Enum):
-    QWEN3_6_PLUS = "qwen/qwen3.6-plus:free"
-    KIMI_K2 = "moonshotai/kimi-k2"
-    ARCEE_BLAZE = "arcee-ai/arcee-blaze"
-    GEMINI_FLASH = "google/gemini-flash-1.5"
+    QWEN3_6_PLUS           = "qwen/qwen3.6-plus:free"
+    KIMI_K2                = "moonshotai/kimi-k2"
+    ARCEE_BLAZE            = "arcee-ai/arcee-blaze"
+    GEMINI_31_FLASH_LITE   = "google/gemini-3.1-flash-lite-preview"
+    GEMINI_31_PRO_PREVIEW  = "google/gemini-3.1-pro-preview"
 
 
 class OnFailedReview(str, Enum):
@@ -48,7 +49,7 @@ class Settings(BaseSettings):
         description="Your OpenRouter API key. Get one free at https://openrouter.ai",
     )
     model: str = Field(
-        default=ModelProvider.QWEN3_6_PLUS.value,
+        default=ModelProvider.GEMINI_31_FLASH_LITE.value,
         description="The LLM model identifier to use via OpenRouter.",
     )
     openrouter_base_url: str = Field(

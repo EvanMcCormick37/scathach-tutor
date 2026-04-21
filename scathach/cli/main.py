@@ -118,7 +118,8 @@ _BANNER = """
 Quick start:
   [bold]scathach ingest[/bold]                  Ingest all new docs from [dim]~/.scathach/docs/[/dim]
   [bold]scathach ingest[/bold] [dim]<file>[/dim]           Ingest a specific document
-  [bold]scathach session[/bold] [dim]<topic>[/dim]         Start a learning session
+  [bold]scathach quest[/bold] [dim]<topic>[/dim]           Start a learning session (all levels, Hydra)
+  [bold]scathach drill[/bold] [dim]<topic>[/dim]           Drill a single difficulty level
   [bold]scathach review[/bold]                  Review due level 1–2 questions
   [bold]scathach super-review[/bold]            Review due level 3–6 questions
   [bold]scathach stats[/bold]                   View progress dashboard
@@ -372,13 +373,13 @@ def rename(
 
 
 # ---------------------------------------------------------------------------
-# session
+# quest  (formerly: session)
 # ---------------------------------------------------------------------------
 
 
 @app.command()
-def session(
-    topic: Optional[str] = typer.Argument(None, help="Topic name to start a session for."),
+def quest(
+    topic: Optional[str] = typer.Argument(None, help="Topic name to start a quest for."),
     timed: Optional[bool] = typer.Option(
         None, "--timed/--untimed", help="Override the default timing mode."
     ),
@@ -395,15 +396,15 @@ def session(
         None, "--delete", "-d", help="Delete a session and all its questions by ID."
     ),
     list_sessions: bool = typer.Option(
-        False, "--list", help="List all unfinished sessions."
+        False, "--list", help="List all unfinished quests."
     ),
-    wizard: bool = typer.Option(True, "--wizard/--no-wizard", help="Run the pre-session setup wizard."),
+    wizard: bool = typer.Option(True, "--wizard/--no-wizard", help="Run the pre-quest setup wizard."),
     open_doc: Optional[bool] = typer.Option(
         None, "--open-doc/--no-open-doc",
         help="Open source document before starting (overrides config default).",
     ),
 ) -> None:
-    """Start or resume an interactive learning session."""
+    """Start or resume an adaptive learning quest (all levels, Hydra protocol)."""
     import asyncio
     from scathach.cli.session_ui import handle_event, make_answer_provider, pre_session_wizard
 
@@ -499,13 +500,13 @@ def session(
             asyncio.run(runner.run())
             return
 
-        # ---- Start new session ----
+        # ---- Start new quest ----
         if topic is None:
             console.print(
                 "[red]Provide a topic name, or use --list / --resume.[/red]\n"
-                "  scathach session [bold]<topic>[/bold]\n"
-                "  scathach session [bold]--list[/bold]\n"
-                "  scathach session [bold]--resume <session_id>[/bold]"
+                "  scathach quest [bold]<topic>[/bold]\n"
+                "  scathach quest [bold]--list[/bold]\n"
+                "  scathach quest [bold]--resume <quest_id>[/bold]"
             )
             raise typer.Exit(code=1)
 
@@ -546,6 +547,70 @@ def session(
             event_handler=handle_event,
         )
         asyncio.run(runner.run())
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# drill
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def drill(
+    topic: str = typer.Argument(..., help="Topic name to drill."),
+    level: int = typer.Option(
+        ..., "--level", "-l", min=1, max=6, help="Difficulty level to drill (1–6).",
+    ),
+    count: int = typer.Option(
+        5, "--count", "-c", min=1, help="Number of questions to generate.",
+    ),
+    timed: Optional[bool] = typer.Option(
+        None, "--timed/--untimed", help="Override the default timing mode.",
+    ),
+) -> None:
+    """Drill a single difficulty level with freshly generated questions.
+
+    Generates [bold]--count[/bold] questions all at [bold]--level[/bold] and runs a flat
+    answer/score loop. Passed questions are added to the FSRS review queues.
+    Count is capped per level: L1=32, L2=16, L3=8, L4=4, L5=2, L6=1."""
+    import asyncio
+    from scathach.cli.drill_ui import run_drill_session
+    from scathach.core.drill import DRILL_MAX_QUESTIONS
+
+    _require_api_key()
+
+    conn = open_db(settings.db_path)
+    try:
+        topic_obj = get_topic_by_name(conn, topic)
+        if topic_obj is None:
+            console.print(
+                f"[red]Topic '{topic}' not found.[/red] "
+                "Run [bold]scathach topics[/bold] to see available topics."
+            )
+            raise typer.Exit(code=1)
+
+        cap = DRILL_MAX_QUESTIONS[level]
+        if count > cap:
+            console.print(
+                f"[yellow]Count capped at {cap} for level {level}.[/yellow]"
+            )
+
+        timing_mode = _resolve_timing(timed, settings.main_timing)
+        llm_client = make_client(
+            api_key=settings.openrouter_api_key,
+            model=settings.model,
+            base_url=settings.openrouter_base_url,
+        )
+        asyncio.run(run_drill_session(
+            conn=conn,
+            client=llm_client,
+            topic_id=topic_obj.id,
+            level=level,
+            count=count,
+            timing=timing_mode,
+            threshold=settings.quality_threshold,
+        ))
     finally:
         conn.close()
 

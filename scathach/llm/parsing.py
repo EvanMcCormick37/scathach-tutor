@@ -1,13 +1,16 @@
 """
-JSON schema definitions and response validators for LLM structured outputs.
+JSON extraction, schema definitions, and response validators for LLM outputs.
 
-The schemas are passed to LLMClient.generate() as `response_schema`; the API
-enforces them so responses arrive as already-valid Python objects. The
-validators below just check structural invariants and normalise types.
+Because not all OpenRouter providers support structured output enforcement,
+responses are returned as raw text and parsed client-side via extract_json().
+The schema constants below document the expected shape but are no longer sent
+to the API.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 
@@ -15,8 +18,51 @@ class ParseError(Exception):
     """Raised when a structured response fails validation."""
 
 
+def extract_json(text: str) -> Any:
+    """
+    Extract and parse a JSON value from raw LLM text.
+
+    Strategies (in order):
+      1. Direct json.loads() on the stripped text.
+      2. Regex extraction of the first [...] block (for array responses).
+      3. Regex extraction of the first {...} block (for object responses).
+
+    Raises:
+        ParseError: If all strategies fail.
+    """
+    text = text.strip()
+
+    # Strip markdown code fences if present
+    fenced = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    fenced = re.sub(r"\s*```$", "", fenced).strip()
+
+    for candidate in (fenced, text):
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Try extracting the first [...] block
+    array_match = re.search(r"\[.*\]", text, re.DOTALL)
+    if array_match:
+        try:
+            return json.loads(array_match.group())
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Try extracting the first {...} block
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group())
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    raise ParseError(f"Could not extract valid JSON from LLM response: {text[:200]!r}")
+
+
 # ---------------------------------------------------------------------------
-# JSON schemas — passed to LLMClient as response_schema
+# JSON schemas — document expected shapes (not sent to the API)
 # ---------------------------------------------------------------------------
 
 QUESTIONS_RESPONSE_SCHEMA: dict[str, Any] = {

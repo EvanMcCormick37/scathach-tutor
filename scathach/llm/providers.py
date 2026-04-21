@@ -19,6 +19,7 @@ class ProviderConfig:
     temperature: float   # Default temperature for this model
     is_free: bool        # Whether this model is on the free tier
 
+
 QWEN_36_PLUS = ProviderConfig(
     model_id="qwen/qwen3.6-plus:free",
     display_name="Qwen 3.6 Plus (Free)",
@@ -27,7 +28,6 @@ QWEN_36_PLUS = ProviderConfig(
     is_free=True,
 )
 
-# Primary provider — Kimi-K2 (strong reasoning, generous free tier)
 KIMI_K2 = ProviderConfig(
     model_id="moonshotai/kimi-k2",
     display_name="Kimi K2 (Moonshot AI)",
@@ -36,7 +36,6 @@ KIMI_K2 = ProviderConfig(
     is_free=True,
 )
 
-# Secondary — Arcee Blaze
 ARCEE_BLAZE = ProviderConfig(
     model_id="arcee-ai/arcee-blaze",
     display_name="Arcee Blaze",
@@ -45,21 +44,26 @@ ARCEE_BLAZE = ProviderConfig(
     is_free=True,
 )
 
-# Fallback — Gemini Flash 1.5 (very generous free tier)
-GEMINI_FLASH = ProviderConfig(
-    model_id="google/gemini-flash-1.5",
-    display_name="Gemini Flash 1.5 (Google)",
+GEMINI_31_FLASH_LITE = ProviderConfig(
+    model_id="google/gemini-3.1-flash-lite-preview",
+    display_name="Gemini 3.1 Flash Lite Preview (Google)",
     max_tokens=8192,
     temperature=0.3,
     is_free=True,
 )
 
-# All providers indexed by model_id for quick lookup
-ALL_PROVIDERS: dict[str, ProviderConfig] = {
-    p.model_id: p for p in [QWEN_36_PLUS, KIMI_K2, ARCEE_BLAZE, GEMINI_FLASH]
-}
+GEMINI_31_PRO_PREVIEW = ProviderConfig(
+    model_id="google/gemini-3.1-pro-preview",
+    display_name="Gemini 3.1 Pro Preview (Google)",
+    max_tokens=8192,
+    temperature=0.3,
+    is_free=False,
+)
 
-DEFAULT_PROVIDER = QWEN_36_PLUS
+ALL_PROVIDERS: dict[str, ProviderConfig] = {
+    p.model_id: p
+    for p in [QWEN_36_PLUS, KIMI_K2, ARCEE_BLAZE, GEMINI_31_FLASH_LITE, GEMINI_31_PRO_PREVIEW]
+}
 
 
 def get_provider(model_id: str) -> ProviderConfig:
@@ -70,7 +74,6 @@ def get_provider(model_id: str) -> ProviderConfig:
     """
     if model_id in ALL_PROVIDERS:
         return ALL_PROVIDERS[model_id]
-    # Generic fallback for unknown model strings
     return ProviderConfig(
         model_id=model_id,
         display_name=model_id,
@@ -78,3 +81,9 @@ def get_provider(model_id: str) -> ProviderConfig:
         temperature=0.3,
         is_free=False,
     )
+
+
+def get_default_provider() -> ProviderConfig:
+    """Return the provider config for the model set in settings."""
+    from scathach.config import settings  # local import avoids circular dependency
+    return get_provider(settings.model)

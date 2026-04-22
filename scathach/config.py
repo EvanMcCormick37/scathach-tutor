@@ -76,6 +76,13 @@ class Settings(BaseSettings):
         default=False,
         description="Whether the Hydra Protocol is enabled during super-review sessions.",
     )
+    hydra_retry_parent: bool = Field(
+        default=True,
+        description=(
+            "Whether to re-ask the parent question immediately after all Hydra sub-questions "
+            "are answered. true = retry parent right away; false = skip parent and move on."
+        ),
+    )
     on_failed_review: OnFailedReview = Field(
         default=OnFailedReview.CHOOSE,
         description=(

@@ -179,6 +179,7 @@ class SessionConfig:
     timing: TimingMode = TimingMode.UNTIMED
     threshold: int = 7
     num_levels: int = 6
+    hydra_retry_parent: bool = True
 
 
 class SessionRunner:
@@ -223,23 +224,25 @@ class SessionRunner:
     # ------------------------------------------------------------------
 
     def _serialize_stack(
-        self, question_stack: list[tuple[list[Question], Optional[Question]]]
+        self, question_stack: list[tuple[list[Question], Optional[Question], int, list[int]]]
     ) -> str:
         """Serialize question stack to JSON (question IDs only)."""
         frames = []
-        for q_list, parent_q in question_stack:
+        for q_list, parent_q, orig_size, seen_ids in question_stack:
             frames.append({
                 "question_ids": [q.id for q in q_list],
                 "parent_id": parent_q.id if parent_q is not None else None,
+                "orig_size": orig_size,
+                "seen_ids": seen_ids,
             })
         return json.dumps(frames)
 
     def _deserialize_stack(
         self, stack_json: str
-    ) -> list[tuple[list[Question], Optional[Question]]]:
+    ) -> list[tuple[list[Question], Optional[Question], int, list[int]]]:
         """Restore question stack from JSON by fetching questions from DB."""
         frames = json.loads(stack_json)
-        result: list[tuple[list[Question], Optional[Question]]] = []
+        result: list[tuple[list[Question], Optional[Question], int, list[int]]] = []
         for frame in frames:
             questions: list[Question] = []
             for qid in frame["question_ids"]:
@@ -249,11 +252,13 @@ class SessionRunner:
             parent_q: Optional[Question] = None
             if frame["parent_id"] is not None:
                 parent_q = get_question(self.conn, frame["parent_id"])
-            result.append((questions, parent_q))
+            orig_size: int = frame.get("orig_size", len(questions))
+            seen_ids: list[int] = frame.get("seen_ids", [])
+            result.append((questions, parent_q, orig_size, seen_ids))
         return result
 
     def _persist_state(
-        self, question_stack: list[tuple[list[Question], Optional[Question]]]
+        self, question_stack: list[tuple[list[Question], Optional[Question], int, list[int]]]
     ) -> None:
         """Write current stack + cleared list to the sessions table."""
         stack_json = self._serialize_stack(question_stack)
@@ -299,10 +304,10 @@ class SessionRunner:
                 return
             await self.event_handler(CurriculumReady(num_questions=len(root_questions)))
 
-            # Stack of (question_list, parent_question_or_None)
+            # Stack of (question_list, parent_question_or_None, orig_size, seen_ids)
             # NOTE: use a copy so root_questions stays an immutable snapshot for index lookups.
-            question_stack: list[tuple[list[Question], Optional[Question]]] = [
-                (list(root_questions), None)
+            question_stack: list[tuple[list[Question], Optional[Question], int, list[int]]] = [
+                (list(root_questions), None, len(root_questions), [])
             ]
 
             # Persist initial session row
@@ -321,27 +326,36 @@ class SessionRunner:
 
         try:
             while question_stack:
-                current_group, parent_q = question_stack[-1]
+                current_group, parent_q, orig_size, seen_ids = question_stack[-1]
 
                 if not current_group:
-                    # Group cleared — pop back to parent
+                    # Hydra frame cleared — pop back to parent frame.
+                    # The parent question stays in its frame; if hydra_retry_parent=True
+                    # it is at position 0 and will be re-asked immediately.
                     question_stack.pop()
-                    # If parent was a root question, mark it cleared and continue
-                    if parent_q is not None and parent_q not in self._cleared:
-                        self._cleared.append(parent_q)
                     self._persist_state(question_stack)
                     continue
 
                 question = current_group[0]
                 depth = len(question_stack) - 1
 
+                # --- Compute progress index for the header ---
+                if depth == 0:
+                    q_index = root_questions.index(self._root_ancestor(question, root_questions)) + 1
+                    q_total = self.config.num_levels
+                else:
+                    # Track first-seen order so retries show the same ordinal.
+                    if question.id not in seen_ids:
+                        seen_ids.append(question.id)
+                    q_index = seen_ids.index(question.id) + 1
+                    q_total = orig_size
+
                 # --- Present question ---
                 self.state = SessionState.QUESTION_PRESENTED
                 await self.event_handler(QuestionPresented(
                     question=question,
-                    index=root_questions.index(self._root_ancestor(question, root_questions)) + 1
-                          if depth == 0 else 1,
-                    total=self.config.num_levels,
+                    index=q_index,
+                    total=q_total,
                     depth=depth,
                 ))
 
@@ -424,13 +438,18 @@ class SessionRunner:
                         num_levels=self.config.num_levels,
                     ))
 
-                    # Move the failed question to the end of its group (will retry after sub-questions)
-                    current_group.pop(0)
-                    current_group.append(question)
-
                     if subquestions:
-                        # Push sub-questions as a new frame
-                        question_stack.append((list(subquestions), question))
+                        if self.config.hydra_retry_parent:
+                            # Keep parent at position 0 — re-asked immediately after hydra clears.
+                            pass
+                        else:
+                            # Drop parent from queue — session moves on after hydra.
+                            current_group.pop(0)
+                        question_stack.append((list(subquestions), question, len(subquestions), []))
+                    else:
+                        # Hydra generation failed — move parent to end for a later retry.
+                        current_group.pop(0)
+                        current_group.append(question)
 
                 # Persist state after each answer so Ctrl+C can resume from here
                 self._persist_state(question_stack)

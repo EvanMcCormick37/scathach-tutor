@@ -337,16 +337,18 @@ async def handle_event(event: SessionEvent) -> None:
 
 def _render_question(event: QuestionPresented) -> None:
     dl = DifficultyLevel.from_int(event.question.difficulty)
-    depth_label = f"[Hydra depth {event.depth}] Parent" if event.depth > 0 else ""
-    title = (
-        f"{depth_label}Question {event.index}/{event.total} — "
-        f"Difficulty {_difficulty_stars(event.question.difficulty, event.total)} ({dl.label})"
-    )
+    if event.depth > 0:
+        prefix = f"[Hydra Depth {event.depth}] Question {event.index}/{event.total}"
+        border = "magenta"
+    else:
+        prefix = f"Question {event.index}/{event.total}"
+        border = "cyan"
+    title = f"{prefix} — {_difficulty_stars(event.question.difficulty)} ({dl.label})"
     console.print()
     console.print(Panel(
         Text(event.question.body, style="bold white"),
         title=title,
-        border_style="cyan",
+        border_style=border,
         expand=True,
     ))
 

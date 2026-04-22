@@ -483,6 +483,7 @@ def quest(
                 timing=timing_mode,
                 threshold=rec.threshold,
                 num_levels=rec.num_levels,
+                hydra_retry_parent=settings.hydra_retry_parent,
             )
             llm_client = make_client(
                 api_key=settings.openrouter_api_key,
@@ -529,6 +530,7 @@ def quest(
             timing=timing_mode,
             threshold=threshold or settings.quality_threshold,
             num_levels=levels or 6,
+            hydra_retry_parent=settings.hydra_retry_parent,
         )
 
         if wizard:
@@ -742,13 +744,17 @@ def config_cmd(
         None, "--set-review-timing",
         help="Set the default review timing: 'timed' or 'untimed'.",
     ),
+    set_hydra_retry_parent: Optional[str] = typer.Option(
+        None, "--set-hydra-retry-parent",
+        help="Set whether to re-ask the parent question after Hydra: 'true' or 'false'.",
+    ),
     test: bool = typer.Option(False, "--test", help="Send a canary prompt to verify the API key."),
     show: bool = typer.Option(False, "--show", help="Print current configuration."),
 ) -> None:
     """View or update scathach configuration."""
     import asyncio
 
-    if show or not any([set_model, set_review_timing, test]):
+    if show or not any([set_model, set_review_timing, set_hydra_retry_parent, test]):
         table = Table(title="Current Configuration", show_lines=True)
         table.add_column("Setting", style="bold")
         table.add_column("Value")
@@ -758,6 +764,7 @@ def config_cmd(
         table.add_row("Review timing", settings.review_timing.value)
         table.add_row("Quality threshold", str(settings.quality_threshold))
         table.add_row("Hydra in super-review", str(settings.hydra_in_super_review))
+        table.add_row("Hydra retry parent", str(settings.hydra_retry_parent))
         table.add_row("On failed review", settings.on_failed_review.value)
         table.add_row("Open doc on session", str(settings.open_doc_on_session))
         table.add_row("DB path", str(settings.db_path))
@@ -779,6 +786,14 @@ def config_cmd(
             raise typer.Exit(code=1)
         _write_env_var("SCATHACH_REVIEW_TIMING", val)
         console.print(f"[green]Review timing set to:[/green] {val}")
+
+    if set_hydra_retry_parent:
+        val = set_hydra_retry_parent.lower().strip()
+        if val not in ("true", "false"):
+            console.print("[red]hydra-retry-parent must be 'true' or 'false'.[/red]")
+            raise typer.Exit(code=1)
+        _write_env_var("SCATHACH_HYDRA_RETRY_PARENT", val)
+        console.print(f"[green]Hydra retry parent set to:[/green] {val}")
 
     if test:
         _require_api_key()

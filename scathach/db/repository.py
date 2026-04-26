@@ -19,75 +19,109 @@ from scathach.db.models import Attempt, Question, ReviewEntry, SessionRecord, To
 # ---------------------------------------------------------------------------
 
 
+_TOPIC_COLS = "id, name, source_path, content, support, next_review_at, target_level, created_at"
+
+
+def _row_to_topic(row: sqlite3.Row) -> Topic:
+    return Topic(
+        id=row["id"],
+        name=row["name"],
+        source_path=row["source_path"],
+        content=row["content"],
+        created_at=row["created_at"],
+        support=row["support"],
+        next_review_at=row["next_review_at"],
+        target_level=row["target_level"],
+    )
+
+
 def upsert_topic(conn: sqlite3.Connection, topic: Topic) -> Topic:
     """Insert or replace a topic by name. Returns the topic with id set."""
     cursor = conn.execute(
-        """
+        f"""
         INSERT INTO topics (name, source_path, content)
         VALUES (?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
             source_path = excluded.source_path,
             content     = excluded.content
-        RETURNING id, created_at
+        RETURNING {_TOPIC_COLS}
         """,
         (topic.name, topic.source_path, topic.content),
     )
     row = cursor.fetchone()
     conn.commit()
-    topic.id = row["id"]
-    topic.created_at = row["created_at"]
-    return topic
+    return _row_to_topic(row)
 
 
 def get_topic_by_name(conn: sqlite3.Connection, name: str) -> Optional[Topic]:
     """Fetch a topic by name, or None if not found."""
     row = conn.execute(
-        "SELECT id, name, source_path, content, created_at FROM topics WHERE name = ?",
+        f"SELECT {_TOPIC_COLS} FROM topics WHERE name = ?",
         (name,),
     ).fetchone()
-    if row is None:
-        return None
-    return Topic(
-        id=row["id"],
-        name=row["name"],
-        source_path=row["source_path"],
-        content=row["content"],
-        created_at=row["created_at"],
-    )
+    return _row_to_topic(row) if row else None
 
 
 def get_topic_by_id(conn: sqlite3.Connection, topic_id: int) -> Optional[Topic]:
     """Fetch a topic by id, or None if not found."""
     row = conn.execute(
-        "SELECT id, name, source_path, content, created_at FROM topics WHERE id = ?",
+        f"SELECT {_TOPIC_COLS} FROM topics WHERE id = ?",
         (topic_id,),
     ).fetchone()
-    if row is None:
-        return None
-    return Topic(
-        id=row["id"],
-        name=row["name"],
-        source_path=row["source_path"],
-        content=row["content"],
-        created_at=row["created_at"],
-    )
+    return _row_to_topic(row) if row else None
 
 
 def list_topics(conn: sqlite3.Connection) -> list[Topic]:
     """Return all topics ordered by created_at desc."""
     rows = conn.execute(
-        "SELECT id, name, source_path, content, created_at FROM topics ORDER BY created_at DESC"
+        f"SELECT {_TOPIC_COLS} FROM topics ORDER BY created_at DESC"
     ).fetchall()
-    return [
-        Topic(
-            id=r["id"],
-            name=r["name"],
-            source_path=r["source_path"],
-            content=r["content"],
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
+    return [_row_to_topic(r) for r in rows]
+
+
+def update_topic_support(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    new_support: float,
+    next_review_at: str,
+) -> None:
+    """Persist updated topic support and next review date."""
+    conn.execute(
+        "UPDATE topics SET support = ?, next_review_at = ? WHERE id = ?",
+        (new_support, next_review_at, topic_id),
+    )
+    conn.commit()
+
+
+def set_topic_target_level(
+    conn: sqlite3.Connection, topic_id: int, target_level: int
+) -> None:
+    """Set the target difficulty level for a topic's review quests."""
+    conn.execute(
+        "UPDATE topics SET target_level = ? WHERE id = ?",
+        (target_level, topic_id),
+    )
+    conn.commit()
+
+
+def get_due_topics(
+    conn: sqlite3.Connection,
+    now: Optional[datetime] = None,
+) -> list[Topic]:
+    """
+    Return topics whose next_review_at <= now, sorted most-overdue first.
+    Topics with next_review_at IS NULL (never reviewed) come first.
+    """
+    now_str = (now or datetime.now(UTC)).isoformat()
+    rows = conn.execute(
+        f"""
+        SELECT {_TOPIC_COLS} FROM topics
+        WHERE next_review_at IS NULL OR next_review_at <= ?
+        ORDER BY next_review_at ASC
+        """,
+        (now_str,),
+    ).fetchall()
+    return [_row_to_topic(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +635,31 @@ def list_active_sessions(conn: sqlite3.Connection) -> list[SessionRecord]:
         """,
     ).fetchall()
     return [_row_to_session(r) for r in rows]
+
+
+def get_topic_level_stats(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """
+    Return aggregate stats per (topic_id, difficulty) pair that have more than
+    one attempt recorded.
+
+    Columns: topic_id, difficulty, attempt_count, avg_final_score,
+             latest_question_created_at.
+    Used by topic-review to identify struggling or stale topic+level combos.
+    """
+    return conn.execute(
+        """
+        SELECT
+            q.topic_id,
+            q.difficulty,
+            COUNT(a.id) AS attempt_count,
+            COALESCE(AVG(a.final_score), 0.0) AS avg_final_score,
+            MAX(q.created_at) AS latest_question_created_at
+        FROM questions q
+        LEFT JOIN attempts a ON a.question_id = q.id
+        GROUP BY q.topic_id, q.difficulty
+        HAVING COUNT(a.id) > 1
+        """
+    ).fetchall()
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:

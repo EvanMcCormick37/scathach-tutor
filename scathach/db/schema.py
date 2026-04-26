@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # DDL executed in order — every statement is idempotent via CREATE TABLE IF NOT EXISTS
 SCHEMA_DDL = """
@@ -23,11 +23,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 CREATE TABLE IF NOT EXISTS topics (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL UNIQUE,
-    source_path TEXT,
-    content     TEXT NOT NULL,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL UNIQUE,
+    source_path    TEXT,
+    content        TEXT NOT NULL,
+    support        REAL NOT NULL DEFAULT 1.0,
+    next_review_at TEXT,
+    target_level   INTEGER NOT NULL DEFAULT 4,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS questions (
@@ -100,19 +103,37 @@ def get_connection(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+# ALTER TABLE migrations for each schema version bump.
+# Each list entry is executed exactly once when upgrading through that version.
+# Wrapped in try/except so re-runs on an already-upgraded DB are harmless.
+_MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "ALTER TABLE topics ADD COLUMN support REAL NOT NULL DEFAULT 1.0",
+        "ALTER TABLE topics ADD COLUMN next_review_at TEXT",
+        "ALTER TABLE topics ADD COLUMN target_level INTEGER NOT NULL DEFAULT 4",
+    ],
+}
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
-    """Create all tables if they don't exist and record schema version."""
+    """Create all tables if they don't exist, then run any pending migrations."""
     conn.executescript(SCHEMA_DDL)
 
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
     current = row[0] if row and row[0] is not None else 0
 
-    if current < CURRENT_SCHEMA_VERSION:
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)",
-            (CURRENT_SCHEMA_VERSION,),
-        )
-        conn.commit()
+    for version in sorted(_MIGRATIONS):
+        if current < version:
+            for stmt in _MIGRATIONS[version]:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass  # column already exists (e.g. fresh DB created from updated DDL)
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)", (version,)
+            )
+            conn.commit()
+            current = version
 
 
 def open_db(db_path: Path | str) -> sqlite3.Connection:

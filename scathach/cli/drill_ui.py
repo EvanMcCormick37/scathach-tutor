@@ -17,8 +17,9 @@ from scathach.core.drill import DRILL_MAX_QUESTIONS, DrillError, generate_drill_
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scheduler import update_schedule
 from scathach.core.scoring import ScoringError, score_answer
+from scathach.core.topic_support import apply_topic_support_update, compute_new_support
 from scathach.db.models import Attempt
-from scathach.db.repository import record_attempt
+from scathach.db.repository import get_topic_by_id, record_attempt
 from scathach.llm.client import LLMClient
 
 from scathach.cli.session_ui import (
@@ -77,6 +78,10 @@ async def run_drill_session(
         border_style="cyan",
     ))
 
+    topic_obj = get_topic_by_id(conn, topic_id)
+    topic_target_level: int = topic_obj.target_level if topic_obj else 4
+    topic_support: float = topic_obj.support if topic_obj else 1.0
+
     session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
@@ -111,6 +116,12 @@ async def run_drill_session(
         attempt = record_attempt(conn, attempt)
         all_attempts.append(attempt)
         _show_result(attempt, diagnosis, question.ideal_answer)
+
+        # Drill questions are always first-time root questions — update topic support.
+        topic_support = compute_new_support(
+            topic_support, attempt.final_score, level, topic_target_level
+        )
+        apply_topic_support_update(conn, topic_id, topic_support)
 
         for queue in ("timed", "untimed"):
             update_schedule(conn, question.id, attempt.final_score, queue)

@@ -17,6 +17,9 @@ class Topic:
     source_path: Optional[str] = None
     id: Optional[int] = None
     created_at: Optional[datetime] = None
+    support: float = 1.0          # FSRS-style stability for topic-level scheduling
+    next_review_at: Optional[str] = None  # ISO datetime; NULL = never reviewed
+    target_level: int = 4         # quest level cap used by topic-review
 
 
 @dataclass

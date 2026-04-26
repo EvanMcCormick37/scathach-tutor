@@ -5,10 +5,10 @@ Implements the pragmatic score-bracket approximation described in the roadmap.
 Full FSRS-5 is a post-MVP extension.
 
 Score brackets (final_score):
-  0–4  → relearning: next review in 1 day, stability halved
-  5–6  → weak pass: next review in max(1, stability * 0.5) days
-  7–8  → good:      next review in stability * 1.5 days
-  9–10 → easy:      next review in stability * 2.5 days
+  0–4  → relearning: next review in 1 day,  stability × 0.5
+  5–6  → weak pass:  next review in max(1, stability × 0.8) days, stability × 0.8
+  7–8  → good:       next review in stability × 2.5 days
+  9–10 → easy:       next review in stability × 3.5 days
 """
 
 from __future__ import annotations
@@ -39,19 +39,19 @@ def _next_stability(current: float, final_score: int) -> float:
     if final_score <= 6:
         return max(0.5, current * 0.8)
     if final_score <= 8:
-        return current * 1.5
-    return current * 2.5
+        return current * 2.5
+    return current * 3.5
 
 
 def _next_interval_days(stability: float, final_score: int) -> float:
-    """Return the review interval in days."""
+    """Return the review interval in days. Interval equals the new stability value."""
     if final_score <= 4:
         return 1.0
     if final_score <= 6:
-        return max(1.0, stability * 0.5)
-    if final_score <= 8:
-        return stability * 1.5
-    return stability * 2.5
+        return max(1.0, stability * 0.8)
+    # Good (7–8) and easy (9–10): interval = stability.
+    # Stability already encodes the full growth for this review.
+    return stability
 
 
 def _next_state(current_state: str, final_score: int) -> str:

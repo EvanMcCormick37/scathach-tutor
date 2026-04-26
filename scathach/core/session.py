@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Optional
 from scathach.core.hydra import HydraError, spawn_subquestions
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scoring import ScoringError, score_answer
+from scathach.core.topic_support import apply_topic_support_update, compute_new_support
 from scathach.db.models import Attempt, Question, SessionRecord
 from scathach.db.repository import (
     complete_session,
@@ -277,6 +278,11 @@ class SessionRunner:
         at the same Hydra depth. When a group is cleared, we return to the parent
         group. The stack starts with the root questions (generated or restored).
         """
+        # Fetch topic once for name display and support tracking.
+        _topic = get_topic_by_id(self.conn, self.config.topic_id)
+        _topic_target_level: int = _topic.target_level if _topic else 4
+        _topic_support: float = _topic.support if _topic else 1.0
+
         if self._restored_record is not None:
             # --- Resume: restore stack from DB ---
             self.state = SessionState.GENERATING  # reuse state for "loading"
@@ -291,7 +297,7 @@ class SessionRunner:
         else:
             # --- Fresh start: generate questions and create session row ---
             self.state = SessionState.GENERATING
-            topic = get_topic_by_id(self.conn, self.config.topic_id)
+            topic = _topic
             topic_name = topic.name if topic else f"topic {self.config.topic_id}"
             await self.event_handler(GeneratingCurriculum(topic_name=topic_name))
             try:
@@ -394,6 +400,18 @@ class SessionRunner:
 
                 attempt = record_attempt(self.conn, attempt)
                 self._all_attempts.append(attempt)
+
+                # --- Update topic support for first-time root questions ---
+                if not is_hydra and not has_prior_attempt:
+                    _topic_support = compute_new_support(
+                        _topic_support,
+                        attempt.final_score,
+                        question.difficulty,
+                        _topic_target_level,
+                    )
+                    apply_topic_support_update(
+                        self.conn, self.config.topic_id, _topic_support
+                    )
 
                 # --- Emit result ---
                 self.state = SessionState.SHOWING_RESULT

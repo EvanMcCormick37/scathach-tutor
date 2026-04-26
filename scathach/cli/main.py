@@ -122,6 +122,8 @@ Quick start:
   [bold]scathach drill[/bold] [dim]<topic>[/dim]           Drill a single difficulty level
   [bold]scathach review[/bold]                  Review due level 1–2 questions
   [bold]scathach super-review[/bold]            Review due level 3–6 questions
+  [bold]scathach topic-review[/bold]            Quest for each topic due for scheduled review
+  [bold]scathach new-question-review[/bold]     Fresh questions for struggling/stale topic+levels
   [bold]scathach stats[/bold]                   View progress dashboard
 
 Tip: drop documents into [bold]~/.scathach/docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
@@ -383,9 +385,6 @@ def quest(
     timed: Optional[bool] = typer.Option(
         None, "--timed/--untimed", help="Override the default timing mode."
     ),
-    threshold: Optional[int] = typer.Option(
-        None, "--threshold", "-t", min=5, max=10, help="Override quality threshold (5–10)."
-    ),
     levels: Optional[int] = typer.Option(
         None, "--levels", "-l", min=1, max=6, help="Number of difficulty levels to include (1–6)."
     ),
@@ -481,7 +480,7 @@ def quest(
             config = SessionConfig(
                 topic_id=rec.topic_id,
                 timing=timing_mode,
-                threshold=rec.threshold,
+                threshold=settings.quality_threshold,
                 num_levels=rec.num_levels,
                 hydra_retry_parent=settings.hydra_retry_parent,
             )
@@ -528,7 +527,7 @@ def quest(
         config = SessionConfig(
             topic_id=topic_obj.id,
             timing=timing_mode,
-            threshold=threshold or settings.quality_threshold,
+            threshold=settings.quality_threshold,
             num_levels=levels or 6,
             hydra_retry_parent=settings.hydra_retry_parent,
         )
@@ -715,17 +714,117 @@ def super_review(
 
 
 # ---------------------------------------------------------------------------
+# topic-review  (quest-based scheduled review for due topics)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="topic-review")
+def topic_review(
+    timed: Optional[bool] = typer.Option(
+        None, "--timed/--untimed", help="Override the default timing mode."
+    ),
+) -> None:
+    """Run a quest for every topic that is due for scheduled review.
+
+    Topics are sorted most-overdue first. Each quest uses that topic's
+    configured [bold]target level[/bold] as the difficulty cap. Topic support
+    is updated automatically as new root questions are answered, pushing the
+    next review date further out on success.
+
+    Set a topic's target level with: [bold]scathach config --set-target-level <topic> <level>[/bold]
+    """
+    import asyncio
+    from scathach.cli.session_ui import handle_event, make_answer_provider
+    from scathach.cli.topic_review_ui import run_topic_review
+
+    _require_api_key()
+
+    timing_mode = _resolve_timing(timed, settings.review_timing)
+    conn = open_db(settings.db_path)
+    try:
+        llm_client = make_client(
+            api_key=settings.openrouter_api_key,
+            model=settings.model,
+            base_url=settings.openrouter_base_url,
+        )
+        asyncio.run(run_topic_review(
+            conn=conn,
+            client=llm_client,
+            timing=timing_mode,
+            threshold=settings.quality_threshold,
+            hydra_retry_parent=settings.hydra_retry_parent,
+            handle_event=handle_event,
+            make_answer_provider=make_answer_provider,
+        ))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# new-question-review  (fresh questions for struggling/stale topic+levels)
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="new-question-review")
+def new_question_review(
+    timed: Optional[bool] = typer.Option(
+        None, "--timed/--untimed", help="Override the default timing mode."
+    ),
+) -> None:
+    """Generate fresh questions for struggling or stale topic+level combinations.
+
+    Eligible pairs: >1 attempt AND (avg score below threshold OR questions older than 30 days).
+    Questions are presented topic-by-topic, in ascending difficulty order.
+    Passed answers are added to both FSRS review queues.
+    """
+    import asyncio
+    from scathach.cli.new_question_review_ui import run_new_question_review_session
+
+    _require_api_key()
+
+    timing_mode = _resolve_timing(timed, settings.review_timing)
+    conn = open_db(settings.db_path)
+    try:
+        llm_client = make_client(
+            api_key=settings.openrouter_api_key,
+            model=settings.model,
+            base_url=settings.openrouter_base_url,
+        )
+        asyncio.run(run_new_question_review_session(
+            conn=conn,
+            client=llm_client,
+            threshold=settings.quality_threshold,
+            timing=timing_mode,
+        ))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
 
 
 @app.command()
-def stats() -> None:
-    """Display a progress dashboard across all topics."""
-    from scathach.cli.stats_ui import render_stats
+def stats(
+    topic: Optional[str] = typer.Option(
+        None, "--topic", "-t",
+        help="Show per-level breakdown for a single topic instead of the full dashboard.",
+    ),
+) -> None:
+    """Display a progress dashboard across all topics.
+
+    Pass [bold]--topic <name>[/bold] to drill into per-level stats for one topic:
+    attempt counts, average scores, pass rates, and FSRS queue status by level.
+    """
     conn = open_db(settings.db_path)
     try:
-        render_stats(conn)
+        if topic is not None:
+            from scathach.cli.stats_ui import render_topic_stats
+            render_topic_stats(conn, topic)
+        else:
+            from scathach.cli.stats_ui import render_stats
+            render_stats(conn)
     finally:
         conn.close()
 
@@ -748,13 +847,17 @@ def config_cmd(
         None, "--set-hydra-retry-parent",
         help="Set whether to re-ask the parent question after Hydra: 'true' or 'false'.",
     ),
+    set_target_level: Optional[str] = typer.Option(
+        None, "--set-target-level",
+        help="Set a topic's review target level: '<topic_name> <level 1–6>'.",
+    ),
     test: bool = typer.Option(False, "--test", help="Send a canary prompt to verify the API key."),
     show: bool = typer.Option(False, "--show", help="Print current configuration."),
 ) -> None:
     """View or update scathach configuration."""
     import asyncio
 
-    if show or not any([set_model, set_review_timing, set_hydra_retry_parent, test]):
+    if show or not any([set_model, set_review_timing, set_hydra_retry_parent, set_target_level, test]):
         table = Table(title="Current Configuration", show_lines=True)
         table.add_column("Setting", style="bold")
         table.add_column("Value")
@@ -794,6 +897,34 @@ def config_cmd(
             raise typer.Exit(code=1)
         _write_env_var("SCATHACH_HYDRA_RETRY_PARENT", val)
         console.print(f"[green]Hydra retry parent set to:[/green] {val}")
+
+    if set_target_level:
+        from scathach.db.repository import get_topic_by_name, set_topic_target_level
+        parts = set_target_level.strip().rsplit(" ", 1)
+        if len(parts) != 2:
+            console.print(
+                "[red]Usage: --set-target-level '<topic_name> <level>'[/red]\n"
+                "Example: scathach config --set-target-level 'My Topic' 3"
+            )
+            raise typer.Exit(code=1)
+        topic_name, level_str = parts
+        try:
+            level = int(level_str)
+            if not 1 <= level <= 6:
+                raise ValueError
+        except ValueError:
+            console.print("[red]Level must be an integer between 1 and 6.[/red]")
+            raise typer.Exit(code=1)
+        conn_cfg = open_db(settings.db_path)
+        try:
+            t = get_topic_by_name(conn_cfg, topic_name)
+            if t is None:
+                console.print(f"[red]Topic '{topic_name}' not found.[/red]")
+                raise typer.Exit(code=1)
+            set_topic_target_level(conn_cfg, t.id, level)
+        finally:
+            conn_cfg.close()
+        console.print(f"[green]Target level for '{topic_name}' set to {level}.[/green]")
 
     if test:
         _require_api_key()

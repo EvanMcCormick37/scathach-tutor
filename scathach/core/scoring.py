@@ -63,6 +63,8 @@ async def score_answer(
     time_taken_s: Optional[float],
     timed: bool,
     threshold: int,
+    document_content: Optional[str] = None,
+    ideal_answer: Optional[str] = None,
 ) -> tuple[Attempt, str]:
     """
     Score a student's answer to a question.
@@ -71,14 +73,18 @@ async def score_answer(
     time-penalty rules in application code.
 
     Args:
-        conn:         Open SQLite connection.
-        client:       Initialised LLMClient.
-        question:     The Question being answered.
-        session_id:   UUID string for the current session.
-        answer_text:  The student's answer.
-        time_taken_s: Elapsed seconds, or None for untimed.
-        timed:        Whether this attempt is under a timer.
-        threshold:    Minimum score to pass (0–10).
+        conn:             Open SQLite connection.
+        client:           Initialised LLMClient.
+        question:         The Question being answered.
+        session_id:       UUID string for the current session.
+        answer_text:      The student's answer.
+        time_taken_s:     Elapsed seconds, or None for untimed.
+        timed:            Whether this attempt is under a timer.
+        threshold:        Minimum score to pass (0–10).
+        document_content: Source document text (session / drill). Passed to
+                          the scorer so it can verify factual accuracy.
+        ideal_answer:     Reference answer (review). Passed to the scorer as a
+                          comparison baseline instead of the full document.
 
     Returns:
         (Attempt, diagnosis_str) — Attempt has all fields populated.
@@ -94,6 +100,8 @@ async def score_answer(
         question_body=question.body,
         difficulty=question.difficulty,
         answer_text=answer_text,
+        document_content=document_content,
+        ideal_answer=ideal_answer,
     )
 
     # Auto-fail if time already expired (no need to call LLM)

@@ -117,6 +117,7 @@ async def run_review_session(
                 time_taken_s=time_taken_s,
                 timed=timing == TimingMode.TIMED,
                 threshold=threshold,
+                ideal_answer=question.ideal_answer,
             )
         except ScoringError as exc:
             console.print(f"[red]Scoring failed:[/red] {exc}. Skipping.")
@@ -217,6 +218,7 @@ async def run_super_review_session(
                 time_taken_s=time_taken_s,
                 timed=timing == TimingMode.TIMED,
                 threshold=threshold,
+                ideal_answer=question.ideal_answer,
             )
         except ScoringError as exc:
             console.print(f"[red]Scoring failed:[/red] {exc}. Skipping.")

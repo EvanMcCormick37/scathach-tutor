@@ -64,13 +64,15 @@ async def run_new_question_review_session(
         )
         return
 
-    # Resolve topic names and group levels by topic
+    # Resolve topic names/content and group levels by topic
     topic_names: dict[int, str] = {}
+    topic_contents: dict[int, str] = {}
     topic_levels: dict[int, list[int]] = {}
     for stat in eligible:
         if stat.topic_id not in topic_names:
             topic = get_topic_by_id(conn, stat.topic_id)
             topic_names[stat.topic_id] = topic.name if topic else f"topic {stat.topic_id}"
+            topic_contents[stat.topic_id] = topic.content if topic else ""
             topic_levels[stat.topic_id] = []
         topic_levels[stat.topic_id].append(stat.difficulty)
 
@@ -185,6 +187,7 @@ async def run_new_question_review_session(
                     time_taken_s=time_taken_s,
                     timed=timing == TimingMode.TIMED,
                     threshold=threshold,
+                    document_content=topic_contents.get(q.topic_id),
                 )
             except ScoringError as exc:
                 console.print(f"[red]Scoring failed:[/red] {exc}. Skipping.")

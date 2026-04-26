@@ -108,6 +108,7 @@ async def run_drill_session(
                 time_taken_s=time_taken_s,
                 timed=timing == TimingMode.TIMED,
                 threshold=threshold,
+                document_content=topic_obj.content if topic_obj else None,
             )
         except ScoringError as exc:
             console.print(f"[red]Scoring failed:[/red] {exc}. Skipping.")

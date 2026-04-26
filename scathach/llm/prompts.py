@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 QUESTION_GENERATION_PROMPT_VERSION = "1.0"
 HYDRA_PROMPT_VERSION = "2.0"
-SCORING_PROMPT_VERSION = "1.0"
+SCORING_PROMPT_VERSION = "2.0"
 DRILL_PROMPT_VERSION = "1.0"
 
 # ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ Respond with ONLY a valid JSON object:
 Do not include any text outside the JSON object. Do not use markdown code fences."""
 
 _SCORING_USER = """\
-Question (difficulty {difficulty}):
+{context_section}Question (difficulty {difficulty}):
 {question_body}
 
 Student's answer:
@@ -321,26 +321,46 @@ Student's answer:
 
 Score this answer."""
 
+_SCORING_DOCUMENT_SECTION = """\
+Reference document:
+---
+{document_content}
+---
+
+"""
+
+_SCORING_IDEAL_ANSWER_SECTION = """\
+Reference answer:
+{ideal_answer}
+
+"""
+
 
 def render_scoring_prompt(
     question_body: str,
     difficulty: int,
     answer_text: str,
+    document_content: "str | None" = None,
+    ideal_answer: "str | None" = None,
 ) -> tuple[str, str]:
     """
     Render the answer scoring prompts.
 
-    NOTE: The ideal_answer is NOT passed to the scorer — it is stored on the
-    question row and retrieved by the application only on failure. The scorer
-    evaluates purely on the answer's own merits.
+    Exactly one of `document_content` or `ideal_answer` should be supplied:
+    - Sessions and drills pass `document_content` so the scorer can verify
+      factual accuracy against the source material.
+    - Reviews pass `ideal_answer` so the scorer has a reference to compare
+      against without needing the full document in context.
 
     NOTE: Time taken and time penalty are NOT passed to the scorer. Timing is
     a mechanical post-processing step applied in scoring.py after the LLM returns.
 
     Args:
-        question_body:  The question text.
-        difficulty:     Difficulty level (1–6).
-        answer_text:    The student's answer.
+        question_body:     The question text.
+        difficulty:        Difficulty level (1–6).
+        answer_text:       The student's answer.
+        document_content:  Full source document (session / drill only).
+        ideal_answer:      Ideal answer text (review only).
 
     Returns:
         (system_prompt, user_prompt)
@@ -352,7 +372,20 @@ def render_scoring_prompt(
         answer_descriptor=dl.answer_descriptor,
         document_coverage=dl.document_coverage,
     )
+
+    if document_content is not None:
+        context_section = _SCORING_DOCUMENT_SECTION.format(
+            document_content=document_content
+        )
+    elif ideal_answer is not None:
+        context_section = _SCORING_IDEAL_ANSWER_SECTION.format(
+            ideal_answer=ideal_answer
+        )
+    else:
+        context_section = ""
+
     user = _SCORING_USER.format(
+        context_section=context_section,
         difficulty=difficulty,
         question_body=question_body,
         answer_text=answer_text,

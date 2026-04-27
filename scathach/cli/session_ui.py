@@ -11,10 +11,17 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
 import time
 from typing import Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
@@ -142,6 +149,61 @@ class DualZoneTimer:
 
 
 # ---------------------------------------------------------------------------
+# External editor helper
+# ---------------------------------------------------------------------------
+
+
+def _open_in_editor(current_text: str) -> str:
+    """
+    Write `current_text` to a temp .md file, open the user's preferred editor,
+    and return the file contents after the editor closes.
+
+    Editor resolution order:
+      $VISUAL → $EDITOR → notepad (Windows) / nano (Unix/macOS)
+
+    VS Code users should set VISUAL="code --wait" (or EDITOR="code --wait")
+    so that the process blocks until the window is closed.
+    """
+    editor_cmd = (
+        os.environ.get("VISUAL")
+        or os.environ.get("EDITOR")
+        or ("notepad" if sys.platform == "win32" else "nano")
+    )
+    cmd = shlex.split(editor_cmd)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(current_text)
+        tmp_path = f.name
+
+    try:
+        subprocess.run(cmd + [tmp_path], check=False)
+        with open(tmp_path, encoding="utf-8") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _add_editor_binding(kb: KeyBindings) -> None:
+    """Register Ctrl+E on `kb` to open the current buffer in $EDITOR."""
+    @kb.add("c-e")
+    def open_editor(event):  # type: ignore[no-untyped-def]
+        current_text = event.current_buffer.text
+
+        def _launch() -> None:
+            new_text = _open_in_editor(current_text)
+            event.current_buffer.set_document(
+                Document(new_text.rstrip("\n"), cursor_position=len(new_text.rstrip("\n")))
+            )
+
+        run_in_terminal(_launch)
+
+
+# ---------------------------------------------------------------------------
 # Answer input
 # ---------------------------------------------------------------------------
 
@@ -163,8 +225,10 @@ async def _get_answer_untimed(
             toss_flag[0] = True
             event.current_buffer.validate_and_handle()
 
+    _add_editor_binding(kb)
+
     session: PromptSession = PromptSession(key_bindings=kb)
-    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit"
+    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
     if allow_toss:
         hint += ", [bold]Ctrl+T[/bold] to toss"
     console.print(hint + ".[/dim]")
@@ -184,7 +248,7 @@ async def _get_answer_timed(
     timer.start()
     toss_flag = [False]
 
-    hint = f"[dim]Type your answer. [bold]Escape+Enter[/bold] to submit"
+    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
     if allow_toss:
         hint += ", [bold]Ctrl+T[/bold] to toss"
     console.print(hint + f". Time limit: {dl.time_limit_s}s[/dim]")
@@ -200,6 +264,8 @@ async def _get_answer_timed(
         def toss(event):  # type: ignore[no-untyped-def]
             toss_flag[0] = True
             event.current_buffer.validate_and_handle()
+
+    _add_editor_binding(kb)
     
     _BAR_WIDTH = 30
 

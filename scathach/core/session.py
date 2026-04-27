@@ -477,7 +477,7 @@ class SessionRunner:
             # Save state at point of interruption so session can be resumed
             self._persist_state(question_stack)
             self.state = SessionState.ABORTED
-            await self.event_handler(SessionAborted(reason="Session interrupted. Resume with: scathach quest --resume " + self.session_id))
+            await self.event_handler(SessionAborted(reason="Session interrupted. Resume with: scathach session --resume " + self.session_id))
             return
 
         # --- Session complete ---

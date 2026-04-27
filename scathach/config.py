@@ -64,24 +64,17 @@ class Settings(BaseSettings):
         le=10,
         description="Minimum score (0–10) for a question to be considered passed.",
     )
-    main_timing: TimingMode = Field(
+    timing: TimingMode = Field(
         default=TimingMode.UNTIMED,
-        description="Default timing mode for learning sessions (timed or untimed).",
+        description="Default timing mode for all sessions and reviews (timed or untimed).",
     )
-    review_timing: TimingMode = Field(
-        default=TimingMode.UNTIMED,
-        description="Default timing mode for review sessions (timed or untimed).",
-    )
-    hydra_in_super_review: bool = Field(
+    hydra_in_review: bool = Field(
         default=False,
-        description="Whether the Hydra Protocol is enabled during super-review sessions.",
+        description="Whether the Hydra Protocol is enabled during long-answer and topic reviews.",
     )
-    hydra_retry_parent: bool = Field(
+    hydra_in_drill: bool = Field(
         default=True,
-        description=(
-            "Whether to re-ask the parent question immediately after all Hydra sub-questions "
-            "are answered. true = retry parent right away; false = skip parent and move on."
-        ),
+        description="Whether the Hydra Protocol is enabled during drill sessions.",
     )
     on_failed_review: OnFailedReview = Field(
         default=OnFailedReview.CHOOSE,

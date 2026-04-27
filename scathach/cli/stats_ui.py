@@ -30,16 +30,24 @@ def render_stats(conn: sqlite3.Connection) -> None:
 
     # --- Topics table ---
     topic_table = Table(title="Topics", show_lines=True)
+    topic_table.add_column("ID", style="dim", width=6)
     topic_table.add_column("Name", style="bold cyan")
     topic_table.add_column("Questions", justify="right")
-    topic_table.add_column("Root", justify="right")
-    topic_table.add_column("Created")
+    topic_table.add_column("Avg Difficulty", justify="right")
+    topic_table.add_column("Avg Score", justify="right")
+    topic_table.add_column("Source", style="dim")
+    topic_table.add_column("Created", style="dim")
 
     for t in topics:
+        avg_difficulty = f"{t['avg_difficulty']:.1f}" if t["avg_difficulty"] is not None else "—"
+        avg_score = f"{t['avg_score']}/10" if t["avg_score"] is not None else "—"
         topic_table.add_row(
+            str(t["id"]),
             t["name"],
             str(t["total_questions"]),
-            str(t["root_questions"]),
+            avg_difficulty,
+            avg_score,
+            t["source_path"] or "(pasted text)",
             str(t["created_at"]),
         )
     console.print(topic_table)
@@ -77,11 +85,13 @@ def render_stats(conn: sqlite3.Connection) -> None:
 
 def _get_topics_stats(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
-        SELECT t.name, t.created_at,
-               COUNT(q.id) AS total_questions,
-               SUM(q.is_root) AS root_questions
+        SELECT t.id, t.name, t.source_path, t.created_at,
+               COUNT(DISTINCT q.id) AS total_questions,
+               ROUND(AVG(q.difficulty), 1) AS avg_difficulty,
+               ROUND(AVG(a.final_score), 1) AS avg_score
         FROM topics t
         LEFT JOIN questions q ON q.topic_id = t.id
+        LEFT JOIN attempts a ON a.question_id = q.id
         GROUP BY t.id
         ORDER BY t.created_at DESC
     """).fetchall()
@@ -96,11 +106,11 @@ def _get_queue_stats(conn: sqlite3.Connection) -> list[dict]:
     for queue_name, table in [("timed", "timed_review_queue"), ("untimed", "untimed_review_queue")]:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         due_now = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE next_review_at IS NULL OR next_review_at <= ?",
+            f"SELECT COUNT(*) FROM {table} WHERE state = 'review' AND next_review_at <= ?",
             (now,)
         ).fetchone()[0]
         due_week = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE next_review_at IS NULL OR next_review_at <= ?",
+            f"SELECT COUNT(*) FROM {table} WHERE state = 'review' AND next_review_at <= ?",
             (week,)
         ).fetchone()[0]
         result.append({"queue": queue_name, "total": total, "due_now": due_now, "due_week": due_week})
@@ -116,7 +126,7 @@ def render_topic_stats(conn: sqlite3.Connection, topic_name: str) -> None:
     if topic is None:
         console.print(
             f"[red]Topic '{topic_name}' not found.[/red] "
-            "Run [bold]scathach topics[/bold] to see available topics."
+            "Run [bold]scathach stats[/bold] to see available topics."
         )
         return
 
@@ -152,8 +162,8 @@ def render_topic_stats(conn: sqlite3.Connection, topic_name: str) -> None:
             f"""
             SELECT q.difficulty,
                    COUNT(rq.question_id) AS in_queue,
-                   SUM(CASE WHEN rq.next_review_at IS NULL
-                                 OR rq.next_review_at <= ? THEN 1 ELSE 0 END) AS due_now
+                   SUM(CASE WHEN rq.state = 'review'
+                                AND rq.next_review_at <= ? THEN 1 ELSE 0 END) AS due_now
             FROM {table} rq
             JOIN questions q ON q.id = rq.question_id
             WHERE q.topic_id = ?

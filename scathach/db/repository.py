@@ -290,6 +290,27 @@ def get_prior_root_questions(
     return [_row_to_question(r) for r in rows]
 
 
+def delete_topic(conn: sqlite3.Connection, topic_id: int) -> int:
+    """
+    Delete a topic and everything it owns: all questions (and their Hydra
+    descendants), attempts, review-queue entries, and sessions.
+
+    Returns the number of root questions deleted.
+    """
+    root_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM questions WHERE topic_id = ? AND parent_id IS NULL",
+            (topic_id,),
+        ).fetchall()
+    ]
+    for qid in root_ids:
+        delete_question(conn, qid)
+    conn.execute("DELETE FROM sessions WHERE topic_id = ?", (topic_id,))
+    conn.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
+    conn.commit()
+    return len(root_ids)
+
+
 def rename_topic(
     conn: sqlite3.Connection,
     old_name: str,
@@ -477,6 +498,7 @@ def get_due_questions(
     min_difficulty: int = 1,
     max_difficulty: int = 6,
     order_by_score: bool = False,
+    topic_id: Optional[int] = None,
 ) -> list[Question]:
     """
     Return questions due for review from the specified queue.
@@ -490,10 +512,16 @@ def get_due_questions(
         order_by_score:  If True, sort by (difficulty ASC, last_score ASC) so worst
                          performers within each difficulty tier appear first.
                          If False (default), sort by difficulty ASC only.
+        topic_id:        If set, restrict results to this topic only.
     """
     table = _queue_table(queue)
     now_str = (now or datetime.now(UTC)).isoformat()
     order_clause = "q.difficulty ASC, COALESCE(rq.last_score, 0) ASC" if order_by_score else "q.difficulty ASC"
+    topic_clause = "AND q.topic_id = ?" if topic_id is not None else ""
+    params: list = [now_str, min_difficulty, max_difficulty]
+    if topic_id is not None:
+        params.append(topic_id)
+    params.append(limit)
     rows = conn.execute(
         f"""
         SELECT q.id, q.topic_id, q.parent_id, q.difficulty, q.body,
@@ -502,10 +530,11 @@ def get_due_questions(
         JOIN questions q ON q.id = rq.question_id
         WHERE (rq.next_review_at IS NULL OR rq.next_review_at <= ?)
           AND q.difficulty BETWEEN ? AND ?
+          {topic_clause}
         ORDER BY {order_clause}
         LIMIT ?
         """,
-        (now_str, min_difficulty, max_difficulty, limit),
+        params,
     ).fetchall()
     return [_row_to_question(r) for r in rows]
 

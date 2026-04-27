@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from scathach.core.drill import DRILL_MAX_QUESTIONS, DrillError, generate_drill_questions
+from scathach.core.hydra import HydraError, spawn_subquestions
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scheduler import update_schedule
 from scathach.core.scoring import ScoringError, score_answer
@@ -42,11 +43,14 @@ async def run_drill_session(
     count: int,
     timing: TimingMode,
     threshold: int,
+    hydra_enabled: bool = False,
 ) -> None:
     """
     Generate `count` fresh questions at `level` and run a flat answer/score loop.
 
-    Passed questions are entered into both FSRS queues. No Hydra, no repeat-on-fail.
+    Passed questions are entered into both FSRS queues. When `hydra_enabled` is
+    True, failed questions spawn sub-questions (Hydra Protocol) inserted
+    immediately after the current position, identical to super-review behaviour.
     """
     dl = DifficultyLevel.from_int(level)
     max_q = DRILL_MAX_QUESTIONS[level]
@@ -85,12 +89,22 @@ async def run_drill_session(
     session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
-    for i, question in enumerate(questions, start=1):
+    queue_list = list(questions)
+    i = 0
+
+    while i < len(queue_list):
+        question = queue_list[i]
+        i += 1
+
+        is_sub = question.parent_id is not None
+        border = "yellow" if is_sub else "blue"
+        depth_label = "[Hydra sub-question] " if is_sub else ""
+        q_dl = DifficultyLevel.from_int(question.difficulty)
         console.print()
         console.print(Panel(
             question.body,
-            title=f"Drill {i}/{len(questions)} — {_difficulty_stars(level)} ({dl.label})",
-            border_style="blue",
+            title=f"{depth_label}Drill {i}/{len(queue_list)} — {_difficulty_stars(question.difficulty)} ({q_dl.label})",
+            border_style=border,
         ))
 
         try:
@@ -118,14 +132,31 @@ async def run_drill_session(
         all_attempts.append(attempt)
         _show_result(attempt, diagnosis, question.ideal_answer)
 
-        # Drill questions are always first-time root questions — update topic support.
-        topic_support = compute_new_support(
-            topic_support, attempt.final_score, level, topic_target_level
-        )
-        apply_topic_support_update(conn, topic_id, topic_support)
+        # Only update topic support for root (non-Hydra) questions.
+        if not is_sub:
+            topic_support = compute_new_support(
+                topic_support, attempt.final_score, level, topic_target_level
+            )
+            apply_topic_support_update(conn, topic_id, topic_support)
 
         for queue in ("timed", "untimed"):
             update_schedule(conn, question.id, attempt.final_score, queue)
+
+        if not attempt.passed and hydra_enabled:
+            try:
+                subquestions = await spawn_subquestions(
+                    conn=conn, client=client,
+                    parent_question=question,
+                    student_answer=answer_text,
+                    diagnosis=diagnosis,
+                )
+                if subquestions:
+                    console.print(
+                        f"\n[magenta bold]Hydra:[/magenta bold] {len(subquestions)} sub-question(s) added."
+                    )
+                    queue_list[i:i] = subquestions
+            except HydraError as exc:
+                console.print(f"[dim]Hydra spawn failed ({exc}), continuing.[/dim]")
 
     if all_attempts:
         _render_summary(all_attempts, title="Drill Summary")

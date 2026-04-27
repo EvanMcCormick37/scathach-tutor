@@ -115,19 +115,20 @@ def get_scheduled_questions(
     min_difficulty: int = 1,
     max_difficulty: int = 2,
     order_by_score: bool = False,
+    topic_id: Optional[int] = None,
 ) -> list[Question]:
     """
     Return questions due for review, filtered by difficulty range.
 
-    Standard `review` sessions use levels 1-2 (default).
-    `super_review` sessions call this with min_difficulty=3, max_difficulty=6
-    and order_by_score=True so worst performers surface first.
+    Standard review uses levels 1–2 (default). Long-answer review calls this
+    with min_difficulty=3, max_difficulty=6 and order_by_score=True so worst
+    performers surface first.
 
     Args:
         min_difficulty:  Minimum difficulty to include (default 1).
-        max_difficulty:  Maximum difficulty to include (default 2 for standard review).
-        order_by_score:  If True, sort by (difficulty ASC, last_score ASC) — worst
-                         performers within each tier come first. Used for super-review.
+        max_difficulty:  Maximum difficulty to include (default 2).
+        order_by_score:  If True, sort by (difficulty ASC, last_score ASC).
+        topic_id:        If set, restrict results to this topic only.
     """
     now = now or datetime.now(UTC)
     return get_due_questions(
@@ -138,4 +139,5 @@ def get_scheduled_questions(
         min_difficulty=min_difficulty,
         max_difficulty=max_difficulty,
         order_by_score=order_by_score,
+        topic_id=topic_id,
     )

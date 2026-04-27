@@ -370,14 +370,12 @@ def _render_scored(event: AnswerScored) -> None:
     result_label = "[green]PASSED[/green]" if a.passed else "[red]FAILED[/red]"
     console.print(f"\n{result_label}  {score_line}")
     console.print(f"[dim]Diagnosis: {event.diagnosis}[/dim]")
-
-    if not a.passed:
-        console.print(Panel(
-            event.ideal_answer,
-            title="[yellow]Ideal Answer[/yellow]",
-            border_style="yellow",
-            expand=True,
-        ))
+    console.print(Panel(
+        event.ideal_answer,
+        title="Ideal Answer",
+        border_style="green" if a.passed else "yellow",
+        expand=True,
+    ))
 
 
 def _colorize_score(score: int) -> str:

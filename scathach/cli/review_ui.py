@@ -56,6 +56,7 @@ async def run_review_session(
     threshold: int,
     limit: int = 20,
     on_failed: OnFailedReview = OnFailedReview.CHOOSE,
+    topic_id: Optional[int] = None,
 ) -> None:
     """
     Run a standard review session (difficulty 1–2).
@@ -70,7 +71,7 @@ async def run_review_session(
     questions = get_scheduled_questions(
         conn, queue, limit=limit, now=now,
         min_difficulty=REVIEW_MIN, max_difficulty=REVIEW_MAX,
-        order_by_score=False,
+        order_by_score=False, topic_id=topic_id,
     )
 
     if not questions:
@@ -149,6 +150,7 @@ async def run_super_review_session(
     limit: int = 10,
     hydra_enabled: bool = False,
     on_failed: OnFailedReview = OnFailedReview.CHOOSE,
+    topic_id: Optional[int] = None,
 ) -> None:
     """
     Run a super-review session (difficulty 3–6).
@@ -164,7 +166,7 @@ async def run_super_review_session(
     questions = get_scheduled_questions(
         conn, queue, limit=limit, now=now,
         min_difficulty=SUPER_REVIEW_MIN, max_difficulty=SUPER_REVIEW_MAX,
-        order_by_score=True,   # worst performers first within each difficulty tier
+        order_by_score=True, topic_id=topic_id,
     )
 
     if not questions:
@@ -274,8 +276,11 @@ def _show_result(attempt: Attempt, diagnosis: str, ideal_answer: str) -> None:
         score_str = _colorize_score(attempt.final_score)
     console.print(f"\n{result}  {score_str}")
     console.print(f"[dim]Diagnosis: {diagnosis}[/dim]")
-    if not attempt.passed:
-        console.print(Panel(ideal_answer, title="[yellow]Ideal Answer[/yellow]", border_style="yellow"))
+    console.print(Panel(
+        ideal_answer,
+        title="Ideal Answer",
+        border_style="green" if attempt.passed else "yellow",
+    ))
 
 
 def _should_repeat(on_failed: OnFailedReview) -> bool:

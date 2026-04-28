@@ -52,7 +52,7 @@ class LLMClient:
 
     @property
     def model(self) -> str:
-        return settings.model_config.
+        return settings.model
 
     async def generate(
         self,
@@ -61,7 +61,7 @@ class LLMClient:
         response_schema: dict[str, Any] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        model_id: str = settings.default_model
+        model_id: str = settings.model
     ) -> Any:
         """
         Send a chat completion request and return the assistant's response.

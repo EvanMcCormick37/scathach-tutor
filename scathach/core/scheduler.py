@@ -39,9 +39,8 @@ def _next_stability(current: float, final_score: int) -> float:
     if final_score <= 6:
         return max(0.5, current * 0.8)
     if final_score <= 8:
-        return current * 2.5
+        return current * 2
     return current * 3.5
-
 
 def _next_interval_days(stability: float, final_score: int) -> float:
     """Return the review interval in days. Interval equals the new stability value."""

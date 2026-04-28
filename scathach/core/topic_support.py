@@ -17,11 +17,19 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-from scathach.core.scheduler import _next_stability
 from scathach.db.repository import update_topic_support
 
-MIN_SUPPORT = 1.0
+MIN_SUPPORT = 0.0
 
+def _next_stability_topic(current: float, final_score: int) -> float:
+    """Return the new stability value for a topic based on the score bracket."""
+    if final_score <= 4:
+        return max(0.25, current * 0.5)
+    if final_score <= 6:
+        return max(0.5, current * 0.8)
+    if final_score <= 8:
+        return current * 1.5
+    return current * 2
 
 def compute_new_support(
     current_support: float,
@@ -41,7 +49,7 @@ def compute_new_support(
     effective_level = min(question_difficulty, target_level)
     scale = (1 / 3) ** (target_level - effective_level)
 
-    full_new = _next_stability(current_support, final_score)
+    full_new = _next_stability_topic(current_support, final_score)
     delta = full_new - current_support
 
     if delta < 0 and is_above_target:

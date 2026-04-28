@@ -786,11 +786,16 @@ def stats(
         False, "--review",
         help="Show only the Review Queue table.",
     ),
+    show_levels: bool = typer.Option(
+        False, "--levels",
+        help="Also show the score distribution by difficulty level.",
+    ),
 ) -> None:
     """Display the progress dashboard.
 
     Pass [bold]--topic <name>[/bold] to drill into per-level stats for one topic.
-    Pass [bold]--topics[/bold] or [bold]--review[/bold] to show only that section."""
+    Pass [bold]--topics[/bold] or [bold]--review[/bold] to show only that section.
+    Pass [bold]--levels[/bold] to also show score distribution by difficulty."""
     if only_topics and only_review:
         console.print("[red]--topics and --review are mutually exclusive.[/red]")
         raise typer.Exit(code=1)
@@ -804,7 +809,7 @@ def stats(
             from scathach.cli.stats_ui import render_stats
             show_topics = not only_review
             show_review = not only_topics
-            render_stats(conn, show_topics=show_topics, show_review=show_review)
+            render_stats(conn, show_topics=show_topics, show_review=show_review, show_score_dist=show_levels)
     finally:
         conn.close()
 

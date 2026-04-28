@@ -20,6 +20,7 @@ def render_stats(
     conn: sqlite3.Connection,
     show_topics: bool = True,
     show_review: bool = True,
+    show_score_dist: bool = False,
 ) -> None:
     """Render the stats dashboard. Pass show_topics/show_review=False to restrict output."""
     topics = _get_topics_stats(conn) if show_topics else None
@@ -72,8 +73,8 @@ def render_stats(
             queue_table.add_row(_fmt(q["queue"]), _fmt(q["total"]), _fmt(q["due_now"]), _fmt(q["due_week"]))
         console.print(queue_table)
 
-    # --- Score distribution (only shown when topics are visible) ---
-    score_dist = _get_score_distribution(conn) if show_topics else []
+    # --- Score distribution (opt-in via --levels) ---
+    score_dist = _get_score_distribution(conn) if show_score_dist else []
 
     if score_dist:
         dist_table = Table(title="Score Distribution (by Difficulty)", show_lines=True)

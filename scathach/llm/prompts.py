@@ -289,7 +289,7 @@ def render_hydra_prompt(
 # ---------------------------------------------------------------------------
 
 _SCORING_SYSTEM = """\
-You are a strict but fair academic evaluator. Your task is to score a student's answer \
+You are a harsh but fair academic evaluator. Your task is to score a student's answer \
 to the given question on a scale of 0 to 10.
 
 Scoring criteria:
@@ -302,7 +302,7 @@ Expected answer format at this difficulty level: {answer_descriptor}, {document_
 A score of 0 means completely wrong or no meaningful attempt. E.g. "IDK" or a blank answer.
 A score of 10 means an ideal answer which demonstrates deep and thourough understanding of the material.
 
-Most answers will not be worth 0 or 10 points, but will fall somewhere in between. Use your judgment to determine the score for the user's answer.
+Most answers will not be worth 0 or 10 points, but will fall somewhere in between. Use your judgment to determine the appropriate score for the user's answer.
 
 Respond with ONLY a valid JSON object:
 {{
@@ -398,7 +398,7 @@ def render_scoring_prompt(
 # ---------------------------------------------------------------------------
 
 _DRILL_SYSTEM = """\
-You are an academic tutor. Your task is to generate exactly {count} open-ended questions \
+You are an expert academic tutor. Your task is to generate exactly {count} open-ended questions \
 from the provided document, all at difficulty level {level} ({label}): {answer_descriptor}.
 
 The {count} questions must cover distinct aspects of the material — do not repeat or closely \

@@ -469,6 +469,8 @@ def session(
                     "Run [bold]scathach stats[/bold] to see available topics."
                 )
                 raise typer.Exit(code=1)
+            should_open = open_doc if open_doc is not None else settings.open_doc_on_session
+            _maybe_open_doc(t_obj.source_path, should_open)
             from scathach.cli.drill_ui import run_drill_session
             from scathach.core.drill import DRILL_MAX_QUESTIONS
             cap = DRILL_MAX_QUESTIONS[level]
@@ -776,10 +778,23 @@ def stats(
         None, "--topic", "-t",
         help="Per-level breakdown for a single topic.",
     ),
+    only_topics: bool = typer.Option(
+        False, "--topics",
+        help="Show only the Topics table.",
+    ),
+    only_review: bool = typer.Option(
+        False, "--review",
+        help="Show only the Review Queue table.",
+    ),
 ) -> None:
     """Display the progress dashboard.
 
-    Pass [bold]--topic <name>[/bold] to drill into per-level stats for one topic."""
+    Pass [bold]--topic <name>[/bold] to drill into per-level stats for one topic.
+    Pass [bold]--topics[/bold] or [bold]--review[/bold] to show only that section."""
+    if only_topics and only_review:
+        console.print("[red]--topics and --review are mutually exclusive.[/red]")
+        raise typer.Exit(code=1)
+
     conn = open_db(settings.db_path)
     try:
         if topic is not None:
@@ -787,7 +802,9 @@ def stats(
             render_topic_stats(conn, topic)
         else:
             from scathach.cli.stats_ui import render_stats
-            render_stats(conn)
+            show_topics = not only_review
+            show_review = not only_topics
+            render_stats(conn, show_topics=show_topics, show_review=show_review)
     finally:
         conn.close()
 

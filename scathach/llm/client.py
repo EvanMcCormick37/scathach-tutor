@@ -14,7 +14,7 @@ from typing import Any, Optional
 from openai import AsyncOpenAI, APIStatusError, APIConnectionError
 
 from scathach.llm.parsing import ParseError, extract_json
-from scathach.llm.providers import ProviderConfig, get_provider
+from scathach.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,6 @@ class LLMClient:
         base_url: str = "https://openrouter.ai/api/v1",
         max_retries: int = _MAX_RETRIES,
     ) -> None:
-        self._provider: ProviderConfig = get_provider(model)
         self._max_retries = max_retries
         self._client = AsyncOpenAI(
             api_key=api_key,
@@ -53,15 +52,16 @@ class LLMClient:
 
     @property
     def model(self) -> str:
-        return self._provider.model_id
+        return settings.model_config.
 
     async def generate(
         self,
         system_prompt: str,
         user_prompt: str,
         response_schema: dict[str, Any] | None = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        model_id: str = settings.default_model
     ) -> Any:
         """
         Send a chat completion request and return the assistant's response.
@@ -85,13 +85,13 @@ class LLMClient:
             LLMError: If all retries are exhausted or a non-retryable error occurs.
         """
         kwargs: dict[str, Any] = dict(
-            model=self._provider.model_id,
+            model=model_id,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
-            max_tokens=max_tokens or self._provider.max_tokens,
-            temperature=temperature if temperature is not None else self._provider.temperature,
+            max_tokens=max_tokens,
+            temperature=temperature
         )
 
         last_exc: Optional[Exception] = None

@@ -16,54 +16,65 @@ from rich.text import Text
 console = Console()
 
 
-def render_stats(conn: sqlite3.Connection) -> None:
-    """Render the full stats dashboard to the terminal."""
-    topics = _get_topics_stats(conn)
-    queue_stats = _get_queue_stats(conn)
-    score_dist = _get_score_distribution(conn)
+def render_stats(
+    conn: sqlite3.Connection,
+    show_topics: bool = True,
+    show_review: bool = True,
+) -> None:
+    """Render the stats dashboard. Pass show_topics/show_review=False to restrict output."""
+    topics = _get_topics_stats(conn) if show_topics else None
 
-    if not topics:
+    if show_topics and not topics:
         console.print("[yellow]No topics yet. Run [bold]scathach ingest <file>[/bold] to get started.[/yellow]")
         return
 
-    console.print(Panel("[bold cyan]scathach Progress Dashboard[/bold cyan]", border_style="cyan"))
+    if show_topics and show_review:
+        console.print(Panel("[bold cyan]scathach Progress Dashboard[/bold cyan]", border_style="cyan"))
 
-    # --- Topics table ---
-    topic_table = Table(title="Topics", show_lines=True)
-    topic_table.add_column("ID", style="dim", width=6)
-    topic_table.add_column("Name", style="bold cyan")
-    topic_table.add_column("Questions", justify="right")
-    topic_table.add_column("Avg Difficulty", justify="right")
-    topic_table.add_column("Avg Score", justify="right")
-    topic_table.add_column("Source", style="dim")
-    topic_table.add_column("Created", style="dim")
+    if show_topics and topics is not None:
+        # --- Topics table ---
+        topic_table = Table(title="Topics", show_lines=True)
+        topic_table.add_column("ID", style="dim", width=6)
+        topic_table.add_column("Name", style="bold cyan")
+        topic_table.add_column("Questions", justify="right")
+        topic_table.add_column("Avg Difficulty", justify="right")
+        topic_table.add_column("Avg Score", justify="right")
+        topic_table.add_column("Source", style="dim")
+        topic_table.add_column("Created", style="dim")
 
-    for t in topics:
-        avg_difficulty = f"{t['avg_difficulty']:.1f}" if t["avg_difficulty"] is not None else "—"
-        avg_score = f"{t['avg_score']}/10" if t["avg_score"] is not None else "—"
-        topic_table.add_row(
-            str(t["id"]),
-            t["name"],
-            str(t["total_questions"]),
-            avg_difficulty,
-            avg_score,
-            t["source_path"] or "(pasted text)",
-            str(t["created_at"]),
-        )
-    console.print(topic_table)
+        for t in topics:
+            avg_difficulty = f"{t['avg_difficulty']:.1f}" if t["avg_difficulty"] is not None else "—"
+            avg_score = f"{t['avg_score']}/10" if t["avg_score"] is not None else "—"
+            topic_table.add_row(
+                str(t["id"]),
+                t["name"],
+                str(t["total_questions"]),
+                avg_difficulty,
+                avg_score,
+                t["source_path"] or "(pasted text)",
+                str(t["created_at"]),
+            )
+        console.print(topic_table)
 
-    # --- Review queue stats ---
-    queue_table = Table(title="Review Queue", show_lines=True)
-    queue_table.add_column("Queue")
-    queue_table.add_column("Total", justify="right")
-    queue_table.add_column("Due Now", justify="right")
-    queue_table.add_column("Due This Week", justify="right")
+    if show_review:
+        # --- Review queue stats ---
+        queue_stats = _get_queue_stats(conn)
+        queue_table = Table(title="Review Queue", show_lines=True)
+        queue_table.add_column("Mode")
+        queue_table.add_column("Total", justify="right")
+        queue_table.add_column("Due Now", justify="right")
+        queue_table.add_column("Due This Week", justify="right")
 
-    for q in queue_stats:
-        queue_table.add_row(q["queue"], str(q["total"]), str(q["due_now"]), str(q["due_week"]))
-    console.print(queue_table)
+        def _fmt(val: int | None) -> str:
+            return "—" if val is None else str(val)
 
-    # --- Score distribution ---
+        for q in queue_stats:
+            queue_table.add_row(_fmt(q["queue"]), _fmt(q["total"]), _fmt(q["due_now"]), _fmt(q["due_week"]))
+        console.print(queue_table)
+
+    # --- Score distribution (only shown when topics are visible) ---
+    score_dist = _get_score_distribution(conn) if show_topics else []
+
     if score_dist:
         dist_table = Table(title="Score Distribution (by Difficulty)", show_lines=True)
         dist_table.add_column("Difficulty")
@@ -99,21 +110,57 @@ def _get_topics_stats(conn: sqlite3.Connection) -> list[dict]:
 
 
 def _get_queue_stats(conn: sqlite3.Connection) -> list[dict]:
-    now = datetime.now(UTC).isoformat()
-    week = (datetime.now(UTC).replace(hour=23, minute=59, second=59)).isoformat()
+    from scathach.config import settings
+    from scathach.core.topic_review import get_eligible_pairs
+
+    now = datetime.now(UTC)
+    now_str = now.isoformat()
+    week_str = now.replace(hour=23, minute=59, second=59).isoformat()
+
+    def _range_counts(min_d: int, max_d: int) -> tuple[int, int, int]:
+        """Return (total, due_now, due_week) for questions in difficulty range, across both queues."""
+        def _count(extra_where: str, extra_params: list) -> int:
+            sql = f"""
+                SELECT COUNT(DISTINCT question_id) FROM (
+                    SELECT rq.question_id FROM timed_review_queue rq
+                    JOIN questions q ON q.id = rq.question_id
+                    WHERE q.difficulty BETWEEN ? AND ? {extra_where}
+                    UNION
+                    SELECT rq.question_id FROM untimed_review_queue rq
+                    JOIN questions q ON q.id = rq.question_id
+                    WHERE q.difficulty BETWEEN ? AND ? {extra_where}
+                )
+            """
+            params = [min_d, max_d] + extra_params + [min_d, max_d] + extra_params
+            return conn.execute(sql, params).fetchone()[0]
+
+        total = _count("", [])
+        due_now = _count("AND rq.state = 'review' AND rq.next_review_at <= ?", [now_str])
+        due_week = _count("AND rq.state = 'review' AND rq.next_review_at <= ?", [week_str])
+        return total, due_now, due_week
 
     result = []
-    for queue_name, table in [("timed", "timed_review_queue"), ("untimed", "untimed_review_queue")]:
-        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        due_now = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE state = 'review' AND next_review_at <= ?",
-            (now,)
-        ).fetchone()[0]
-        due_week = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE state = 'review' AND next_review_at <= ?",
-            (week,)
-        ).fetchone()[0]
-        result.append({"queue": queue_name, "total": total, "due_now": due_now, "due_week": due_week})
+
+    for label, min_d, max_d in [("Flash Cards", 1, 2), ("Long Answers", 3, 6)]:
+        total, due_now, due_week = _range_counts(min_d, max_d)
+        result.append({"queue": label, "total": total, "due_now": due_now, "due_week": due_week})
+
+    # Topics (next_review_at IS NULL means never reviewed → counts as due)
+    total_topics = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    due_now_topics = conn.execute(
+        "SELECT COUNT(*) FROM topics WHERE next_review_at IS NULL OR next_review_at <= ?",
+        (now_str,),
+    ).fetchone()[0]
+    due_week_topics = conn.execute(
+        "SELECT COUNT(*) FROM topics WHERE next_review_at IS NULL OR next_review_at <= ?",
+        (week_str,),
+    ).fetchone()[0]
+    result.append({"queue": "Topics", "total": total_topics, "due_now": due_now_topics, "due_week": due_week_topics})
+
+    # New Questions — eligibility-based, no time dimension
+    eligible = len(get_eligible_pairs(conn, settings.quality_threshold))
+    result.append({"queue": "New Questions", "total": None, "due_now": eligible, "due_week": None})
+
     return result
 
 

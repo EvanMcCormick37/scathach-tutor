@@ -379,10 +379,15 @@ def pre_session_wizard(defaults: SessionConfig) -> SessionConfig:
 async def handle_event(event: SessionEvent) -> None:
     """Render a SessionEvent to the terminal."""
     if isinstance(event, GeneratingCurriculum):
-        await _start_spinner(f"Generating curriculum for '{event.topic_name}'…")
+        if event.session_type == "drill":
+            msg = f"Generating {event.drill_count} level-{event.drill_level} question(s) for '{event.topic_name}'…"
+        else:
+            msg = f"Generating curriculum for '{event.topic_name}'…"
+        await _start_spinner(msg)
     elif isinstance(event, CurriculumReady):
+        label = "Drill ready" if event.session_type == "drill" else "Curriculum ready"
         await _stop_spinner(
-            f"[green]✓[/green] [dim]Curriculum ready — {event.num_questions} question(s) generated.[/dim]"
+            f"[green]✓[/green] [dim]{label} — {event.num_questions} question(s) generated.[/dim]"
         )
     elif isinstance(event, HydraSpawning):
         await _start_spinner("Spawning Hydra sub-questions…")

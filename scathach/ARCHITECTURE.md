@@ -14,7 +14,7 @@ scathach/
 │   ├── main.py             # Top-level command definitions + topic sub-group
 │   ├── session_ui.py       # Learning session TUI (timers, input, event rendering)
 │   ├── review_ui.py        # Review TUI (flash-cards & long-answers)
-│   ├── drill_ui.py         # Drill session UI
+│   ├── drill_ui.py         # Drill session UI (placeholder; drills run via SessionRunner)
 │   ├── topic_review_ui.py  # Topic-scheduled quest UI
 │   ├── new_question_review_ui.py  # Fresh-question review UI
 │   └── stats_ui.py         # Progress dashboard
@@ -26,7 +26,7 @@ scathach/
 │   ├── scoring.py          # LLM answer evaluation + time-penalty logic
 │   ├── drill.py            # Drill question generation
 │   ├── topic_review.py     # Eligible-pair detection + single-question generation
-│   └── topic_support.py    # Topic-level FSRS stability tracking
+│   └── topic_support.py    # Topic-level exam/practice support + next_review_at finalization
 ├── db/                     # SQLite persistence
 │   ├── schema.py           # DDL, versioning, connection management
 │   ├── models.py           # Dataclasses: Topic, Question, Attempt, SessionRecord, ReviewEntry
@@ -82,9 +82,13 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 
 | Command | Purpose |
 |---------|---------|
-| `ingest [path]` | Ingest file, URL, or pasted text; shows updated topics table on success |
-| `session <topic>` | Start an adaptive quest (all levels, Hydra); see flags below |
-| `session <topic> --drill --level N` | Drill mode: flat quiz at a single difficulty level |
+| `ingest [srcpath] [name]` | Ingest a file or URL with an optional topic name; omit both to scan `~/.scathach/docs/`; shows updated topics table on success |
+| `session quest <topic>` | Start an adaptive quest (Hydra, levels 1–4 by default); opens source doc by default |
+| `session quest <topic> --exam` | Closed-book quest; source doc not opened; updates exam support |
+| `session drill <topic> --level N` | Fixed-level quiz; stored in sessions table, resumable |
+| `session list` | List all unfinished sessions |
+| `session resume <id>` | Resume an interrupted session |
+| `session delete <id>` | Permanently delete a session and its questions |
 | `review` | Interactive review mode selector (shows live due-counts) |
 | `review --flash-cards` | FSRS review: levels 1–2 |
 | `review --long-answers` | FSRS review: levels 3–6, worst performers first |
@@ -107,22 +111,27 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 | `topic delete <name>` | Permanently delete a topic and all its data |
 | `topic set-level <name> <level>` | Set the target difficulty level for topic review quests |
 
-#### `session` flags
+#### `session quest` flags
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--drill` | off | Switches to drill mode. Requires `--level`. |
-| `--level N` | — | Difficulty level for drill (1–6). |
-| `--count N` | 5 | Questions to generate in drill mode. |
-| `--levels N` | 6 | Max difficulty levels for quest mode. |
+| `--levels N` | 4 | Max difficulty levels. |
 | `--timed/--untimed` | config | Override timing. |
-| `--hydra/--no-hydra` | on (quest), config (drill) | Hydra Protocol on failure. |
+| `--hydra/--no-hydra` | on | Hydra Protocol on failure. |
 | `--threshold N` | config | Override pass threshold (5–10). |
 | `--wizard` | off | Run the pre-session setup wizard (opt-in). |
-| `--open-doc/--no-open-doc` | config | Open source document before starting. |
-| `--list` | — | List all unfinished quests. |
-| `--resume <id>` | — | Resume an interrupted quest. |
-| `--delete <id>` | — | Delete a quest and its questions. |
+| `--exam` | off | Closed-book mode: source doc not opened; updates exam_support. |
+
+#### `session drill` flags
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--level N` | _(required)_ | Difficulty level (1–6). |
+| `--count N` | 5 | Questions to generate. |
+| `--timed/--untimed` | config | Override timing. |
+| `--hydra/--no-hydra` | config | Hydra Protocol on failure. |
+| `--threshold N` | config | Override pass threshold (5–10). |
+| `--exam` | off | Closed-book mode: source doc not opened; updates exam_support. |
 
 #### `review` flags
 
@@ -133,7 +142,6 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 | `--hydra/--no-hydra` | Hydra for long-answers and topics. |
 | `--on-fail repeat\|skip\|choose` | Override failure behaviour for FSRS modes. |
 | `--topic <name>` | Restrict flash-cards and long-answers to one topic. |
-| `--open-doc/--no-open-doc` | Open source documents before starting. |
 
 ---
 
@@ -206,7 +214,7 @@ TimerZone        —  NORMAL | PENALTY | EXPIRED
 
 ### `session.py` — SessionRunner
 
-The central state machine. Orchestrates the full learning loop:
+The central state machine for both quest and drill sessions. Orchestrates the full learning loop:
 
 ```
 IDLE
@@ -296,10 +304,10 @@ Opens a SQLite connection, sets `PRAGMA journal_mode=WAL` and `PRAGMA foreign_ke
 
 | Table | Key columns |
 |-------|------------|
-| `topics` | `id`, `name` (UNIQUE), `source_path`, `content`, `support`, `next_review_at`, `target_level`, `created_at` |
+| `topics` | `id`, `name` (UNIQUE), `source_path`, `content`, `exam_support`, `practice_support`, `next_review_at`, `target_level`, `created_at` |
 | `questions` | `id`, `topic_id` (FK), `parent_id` (FK self — Hydra hierarchy), `difficulty` (1–6), `body`, `ideal_answer`, `is_root` |
 | `attempts` | `id`, `question_id` (FK), `session_id`, `answer_text`, `raw_score`, `final_score`, `time_taken_s`, `time_penalty`, `timed`, `passed` |
-| `sessions` | `id`, `topic_id` (FK), `status` (active/complete), `timing`, `threshold`, `num_levels`, `question_stack` (JSON), `cleared_ids` (JSON), `root_ids` (JSON) |
+| `sessions` | `id`, `topic_id` (FK), `status` (active/complete), `session_type` (quest/drill), `timing`, `threshold`, `num_levels`, `is_exam`, `drill_level`, `question_stack` (JSON), `cleared_ids` (JSON), `root_ids` (JSON) |
 | `timed_review_queue` | `question_id` (PK/FK), `last_score`, `next_review_at`, `stability`, `difficulty_fsrs`, `state` (new/learning/review/relearning) |
 | `untimed_review_queue` | (same structure as timed) |
 
@@ -364,8 +372,7 @@ Registry of `ProviderConfig` objects (model_id, display_name, max_tokens, temper
 User input
   ├─ filepath (.pdf / .docx / .pptx / .html)  ─► docling DocumentConverter → markdown
   ├─ filepath (.txt / .md / .rst)             ─► plain-text read (UTF-8 + latin-1 fallback)
-  ├─ URL (http/https)                          ─► httpx.get → temp file → docling → markdown
-  └─ pasted text                               ─► raw string
+  └─ URL (http/https)                          ─► httpx.get → temp file → docling → markdown
          └─► upsert_topic(conn, Topic(name, content, source_path))
 ```
 
@@ -390,7 +397,7 @@ Pydantic `BaseSettings` singleton. Source priority: environment variables > `~/.
 | `SCATHACH_HYDRA_IN_REVIEW` | `false` | Enable Hydra in long-answer and topic reviews |
 | `SCATHACH_HYDRA_IN_DRILL` | `true` | Enable Hydra in drill sessions |
 | `SCATHACH_ON_FAILED_REVIEW` | `choose` | `repeat` / `skip` / `choose` |
-| `SCATHACH_OPEN_DOC_ON_SESSION` | `false` | Open source document at session start |
+| `SCATHACH_MAX_PRACTICE_SUPPORT` | `14.0` | Sigmoid asymptote for practice support contribution (days) |
 | `SCATHACH_DB_PATH` | `~/.scathach/scathach.db` | SQLite database path |
 
 Runtime changes (`--set-model`, `--set-timing`) write to `~/.scathach/.env` via `_write_env_var()`.
@@ -400,7 +407,7 @@ Runtime changes (`--set-model`, `--set-timing`) write to `~/.scathach/.env` via 
 ## Data flow: end-to-end session
 
 ```
-1. scathach ingest notes.pdf
+1. scathach ingest notes.pdf "My Notes"
        ingestor.py ──► docling ──► Topic.content ──► db: topics
        cli: render_stats() ──► topics table printed
 
@@ -446,6 +453,8 @@ Runtime changes (`--set-model`, `--set-timing`) write to `~/.scathach/.env` via 
 **Scoring context injection** — The LLM scorer receives different context depending on the mode: the full source document during session/drill (so it can verify facts against the material), and the stored ideal answer during reviews (a lighter reference that doesn't require the full document). Timing data is never sent to the LLM.
 
 **Ideal answer always shown** — After every scored attempt the ideal answer is displayed unconditionally, using a green panel for passes and yellow for failures. There is no reason to withhold it.
+
+**Open-book vs. closed-book support** — Each topic tracks two independent support metrics. `exam_support` is updated only in `--exam` (closed-book) sessions using FSRS-style stability brackets (×0.5 on fail, ×1.5/×2.0 on pass). `practice_support` is updated in all regular (open-book) sessions and drills: each first-time root question adds or subtracts a difficulty-scaled delta (+1 at target level, +(1/3)^n for n levels below, no penalty for above-target failures). The scheduled review interval is `exam_support + sigmoid(practice_support) × MAX_PRACTICE_SUPPORT`. `next_review_at` is only written once, when the user completes a topic-review quest (`review --topics`), not after every question.
 
 **Two FSRS queues** — Timed and untimed reviews are tracked independently. Answering under pressure is a different retrieval condition than answering freely; both are worth tracking separately for accurate scheduling.
 

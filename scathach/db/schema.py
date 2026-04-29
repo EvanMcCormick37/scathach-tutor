@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 5
 
 # DDL executed in order — every statement is idempotent via CREATE TABLE IF NOT EXISTS
 SCHEMA_DDL = """
@@ -23,20 +23,22 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 CREATE TABLE IF NOT EXISTS topics (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    name           TEXT NOT NULL UNIQUE,
-    source_path    TEXT,
-    content        TEXT NOT NULL,
-    support        REAL NOT NULL DEFAULT 1.0,
-    next_review_at TEXT,
-    target_level   INTEGER NOT NULL DEFAULT 4,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL UNIQUE,
+    source_path      TEXT,
+    content          TEXT NOT NULL,
+    exam_support     REAL NOT NULL DEFAULT 1.0,
+    practice_support REAL NOT NULL DEFAULT 0.0,
+    next_review_at   TEXT,
+    target_level     INTEGER NOT NULL DEFAULT 4,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS questions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     topic_id        INTEGER NOT NULL REFERENCES topics(id),
     parent_id       INTEGER REFERENCES questions(id),
+    session_id      TEXT REFERENCES sessions(id),
     difficulty      INTEGER NOT NULL CHECK (difficulty BETWEEN 1 AND 6),
     body            TEXT NOT NULL,
     ideal_answer    TEXT NOT NULL,
@@ -82,9 +84,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     id              TEXT PRIMARY KEY,
     topic_id        INTEGER NOT NULL REFERENCES topics(id),
     status          TEXT NOT NULL DEFAULT 'active',
+    session_type    TEXT NOT NULL DEFAULT 'quest',
     timing          TEXT NOT NULL DEFAULT 'untimed',
     threshold       INTEGER NOT NULL DEFAULT 7,
     num_levels      INTEGER NOT NULL DEFAULT 6,
+    is_exam         BOOLEAN NOT NULL DEFAULT 0,
+    drill_level     INTEGER,
     question_stack  TEXT,
     cleared_ids     TEXT,
     root_ids        TEXT,
@@ -111,6 +116,20 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE topics ADD COLUMN support REAL NOT NULL DEFAULT 1.0",
         "ALTER TABLE topics ADD COLUMN next_review_at TEXT",
         "ALTER TABLE topics ADD COLUMN target_level INTEGER NOT NULL DEFAULT 4",
+    ],
+    3: [
+        "ALTER TABLE topics ADD COLUMN exam_support REAL NOT NULL DEFAULT 1.0",
+        "ALTER TABLE topics ADD COLUMN practice_support REAL NOT NULL DEFAULT 0.0",
+        # Migrate existing support values into exam_support (no-op on new DBs — caught by try/except)
+        "UPDATE topics SET exam_support = support",
+        "ALTER TABLE sessions ADD COLUMN is_exam BOOLEAN NOT NULL DEFAULT 0",
+    ],
+    4: [
+        "ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'quest'",
+        "ALTER TABLE sessions ADD COLUMN drill_level INTEGER",
+    ],
+    5: [
+        "ALTER TABLE questions ADD COLUMN session_id TEXT REFERENCES sessions(id)",
     ],
 }
 

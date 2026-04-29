@@ -18,8 +18,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from scathach.config import settings
 from scathach.core.question import TimingMode
 from scathach.core.session import SessionConfig, SessionRunner
+from scathach.core.topic_support import finalize_topic_next_review
 from scathach.db.repository import get_due_topics
 from scathach.llm.client import LLMClient
 
@@ -56,7 +58,8 @@ async def run_topic_review(
     table = Table(title="Topic Review — Due Topics", show_lines=True)
     table.add_column("Topic", style="bold cyan")
     table.add_column("Target Level", justify="right")
-    table.add_column("Support", justify="right")
+    table.add_column("Exam Supp.", justify="right")
+    table.add_column("Practice Supp.", justify="right")
     table.add_column("Due")
 
     for t in due:
@@ -64,7 +67,8 @@ async def run_topic_review(
         table.add_row(
             t.name,
             str(t.target_level),
-            f"{t.support:.1f}",
+            f"{t.exam_support:.2f}",
+            f"{t.practice_support:.2f}",
             due_str,
         )
     console.print(table)
@@ -74,7 +78,8 @@ async def run_topic_review(
         console.print(Panel(
             f"[bold white]{topic.name}[/bold white]\n"
             f"[dim]Target level: {topic.target_level}  ·  "
-            f"Support: {topic.support:.1f}[/dim]",
+            f"Exam support: {topic.exam_support:.2f}  ·  "
+            f"Practice support: {topic.practice_support:.2f}[/dim]",
             title="Topic Review Quest",
             border_style="magenta",
             expand=False,
@@ -95,4 +100,5 @@ async def run_topic_review(
             event_handler=handle_event,
         )
         await runner.run()
+        finalize_topic_next_review(conn, topic.id, settings.max_practice_support)
         console.print()

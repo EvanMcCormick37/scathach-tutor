@@ -31,7 +31,7 @@ from scathach.db.repository import (
     set_topic_target_level,
 )
 from scathach.db.schema import open_db
-from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_text, ingest_url
+from scathach.ingestion.ingestor import IngestionError, ingest_file, ingest_url
 from scathach.llm.client import make_client
 
 app = typer.Typer(
@@ -87,11 +87,22 @@ def open_document(path: str | Path) -> None:
         console.print(f"[yellow]Could not open document: {exc}[/yellow]")
 
 
-def _maybe_open_doc(source_path: Optional[str], open_doc: bool) -> None:
-    if not open_doc or not source_path:
+def _maybe_open_doc(source_path: Optional[str]) -> None:
+    if not source_path:
         return
     console.print(f"[dim]Opening source document: {source_path}[/dim]")
     open_document(source_path)
+
+
+def _show_exam_message() -> None:
+    console.print(Panel(
+        "[bold yellow]Closed-Book Exam Mode[/bold yellow]\n\n"
+        "The source document will not be opened. Answer from memory.\n\n"
+        "[dim]Answering dishonestly defeats the scheduling system — "
+        "your results will only affect your own review intervals.[/dim]",
+        border_style="yellow",
+        expand=False,
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -138,16 +149,17 @@ _BANNER = """
   └─────────────────────────────────────────┘[/bold cyan]
 
 Quick start:
-  [bold]scathach ingest[/bold]                     Ingest all new docs from [dim]~/.scathach/docs/[/dim]
-  [bold]scathach ingest[/bold] [dim]<file>[/dim]              Ingest a specific document
-  [bold]scathach session[/bold] [dim]<topic>[/dim]            Quest (adaptive, all levels, Hydra)
-  [bold]scathach session[/bold] [dim]<topic>[/dim] [bold]--drill[/bold]   Drill a single difficulty level
-  [bold]scathach review[/bold]                     Interactive review mode selector
-  [bold]scathach review --flash-cards[/bold]       Level 1–2 FSRS review
-  [bold]scathach review --long-answers[/bold]      Level 3–6 FSRS review
-  [bold]scathach review --topics[/bold]            Quest for each due topic
-  [bold]scathach review --new-questions[/bold]     Fresh questions for weak spots
-  [bold]scathach stats[/bold]                      Progress dashboard
+  [bold]scathach ingest[/bold]                          Ingest all new docs from [dim]~/.scathach/docs/[/dim]
+  [bold]scathach ingest[/bold] [dim]<file>[/dim]                   Ingest a specific document
+  [bold]scathach session quest[/bold] [dim]<topic>[/dim]           Quest (adaptive, levels 1–4, Hydra)
+  [bold]scathach session drill[/bold] [dim]<topic> [bold]--level N[/bold]  Drill a single difficulty level
+  [bold]scathach session list[/bold]                    List unfinished sessions
+  [bold]scathach review[/bold]                          Interactive review mode selector
+  [bold]scathach review --flash-cards[/bold]            Level 1–2 FSRS review
+  [bold]scathach review --long-answers[/bold]           Level 3–6 FSRS review
+  [bold]scathach review --topics[/bold]                 Quest for each due topic
+  [bold]scathach review --new-questions[/bold]          Fresh questions for weak spots
+  [bold]scathach stats[/bold]                           Progress dashboard
 
 Tip: drop documents into [bold]~/.scathach/docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
 """
@@ -188,54 +200,35 @@ _SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm", ".txt", ".md
 
 @app.command()
 def ingest(
-    path: Optional[str] = typer.Argument(
+    srcpath: Optional[str] = typer.Argument(
         None,
-        help="Path to a document to ingest. Omit to scan ~/.scathach/docs/ for new files.",
+        help="File path or URL to ingest. Omit to scan ~/.scathach/docs/ for new files.",
     ),
-    name: Optional[str] = typer.Option(
-        None, "--name", "-n", help="Custom topic name."
-    ),
-    paste: bool = typer.Option(
-        False, "--paste", "-p", help="Paste raw text instead of providing a file path."
-    ),
-    url: Optional[str] = typer.Option(
-        None, "--url", "-u", help="URL of a web page or PDF to fetch and ingest."
+    name: Optional[str] = typer.Argument(
+        None,
+        help="Custom topic name. Defaults to filename stem or page title.",
     ),
 ) -> None:
     """Ingest documents into scathach.
 
     With no arguments, scans [bold]~/.scathach/docs/[/] for any files not yet ingested.
-    Pass a file path, [bold]--paste[/bold] for raw text, or [bold]--url[/bold] for a web page.
+    Pass a file path or URL, and an optional topic name as the second argument.
     """
-    mode_count = sum([paste, path is not None, url is not None])
-    if mode_count > 1:
-        console.print("[red]Use only one of: a file path argument, --paste, or --url.[/red]")
-        raise typer.Exit(code=1)
-
     conn = open_db(settings.db_path)
     try:
-        if paste:
-            if name is None:
-                name = typer.prompt("Topic name")
-            console.print("[cyan]Paste your text below. Press Ctrl+D (or Ctrl+Z on Windows) when done.[/]")
-            text = sys.stdin.read()
-            topic = ingest_text(conn, text, topic_name=name)
-            console.print(f"[green]Ingested topic '{topic.name}' (id={topic.id}) from pasted text.[/]")
-
-        elif url is not None:
-            with console.status(f"[cyan]Fetching {url}…[/]"):
-                topic = ingest_url(conn, url, topic_name=name)
-            console.print(
-                f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}) from URL.[/]"
-            )
-
-        elif path is not None:
-            with console.status(f"[cyan]Ingesting {Path(path).name}…[/]"):
-                topic = ingest_file(conn, path, topic_name=name)
-            console.print(
-                f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}).[/]"
-            )
-
+        if srcpath is not None:
+            if srcpath.startswith(("http://", "https://")):
+                with console.status(f"[cyan]Fetching {srcpath}…[/]"):
+                    topic = ingest_url(conn, srcpath, topic_name=name)
+                console.print(
+                    f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}) from URL.[/]"
+                )
+            else:
+                with console.status(f"[cyan]Ingesting {Path(srcpath).name}…[/]"):
+                    topic = ingest_file(conn, srcpath, topic_name=name)
+                console.print(
+                    f"[green]Ingested topic '[bold]{topic.name}[/]' (id={topic.id}).[/]"
+                )
         else:
             _ingest_docs_folder(conn)
 
@@ -312,191 +305,52 @@ def _ingest_docs_folder(conn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# session  (quest + drill)
+# session  (quest | drill | list | resume | delete)
 # ---------------------------------------------------------------------------
 
+session_app = typer.Typer(
+    name="session",
+    help="Start or manage learning sessions.",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
+app.add_typer(session_app, name="session")
 
-@app.command()
-def session(
-    topic: Optional[str] = typer.Argument(None, help="Topic name to study."),
-    drill: bool = typer.Option(
-        False, "--drill", help="Drill mode: flat quiz at a single difficulty level."
-    ),
-    level: Optional[int] = typer.Option(
-        None, "--level", "-l", min=1, max=6,
-        help="Difficulty level for drill (1–6). Required with --drill.",
-    ),
-    count: int = typer.Option(
-        5, "--count", "-c", min=1,
-        help="Number of questions to generate in drill mode.",
-    ),
-    levels: Optional[int] = typer.Option(
-        None, "--levels", min=1, max=6,
-        help="Max difficulty levels for quest mode (default 6).",
+
+@session_app.command("quest")
+def session_quest(
+    topic: str = typer.Argument(..., help="Topic name to study."),
+    levels: int = typer.Option(
+        4, "--levels", min=1, max=6,
+        help="Max difficulty levels (default: 4).",
     ),
     timed: Optional[bool] = typer.Option(
-        None, "--timed/--untimed", help="Override default timing."
+        None, "--timed/--untimed", help="Override default timing.",
     ),
     hydra: Optional[bool] = typer.Option(
-        None, "--hydra/--no-hydra",
-        help="Enable Hydra Protocol on failure. Quest default: on. Drill default: on.",
+        None, "--hydra/--no-hydra", help="Enable Hydra Protocol on failure (default: on).",
     ),
     threshold: Optional[int] = typer.Option(
-        None, "--threshold", min=5, max=10,
-        help="Override pass threshold (5–10).",
+        None, "--threshold", min=5, max=10, help="Override pass threshold (5–10).",
     ),
     wizard: bool = typer.Option(
         False, "--wizard",
         help="Run the pre-session setup wizard to configure timing, threshold, and levels.",
     ),
-    open_doc: Optional[bool] = typer.Option(
-        None, "--open-doc/--no-open-doc",
-        help="Open source document before starting.",
-    ),
-    resume: Optional[str] = typer.Option(
-        None, "--resume", "-r", help="Resume an interrupted quest by its ID."
-    ),
-    delete: Optional[str] = typer.Option(
-        None, "--delete", "-d", help="Delete a quest and all its questions by ID."
-    ),
-    list_sessions: bool = typer.Option(
-        False, "--list", help="List all unfinished quests."
+    exam: bool = typer.Option(
+        False, "--exam",
+        help="Closed-book exam mode: source document is not opened.",
     ),
 ) -> None:
-    """Start a learning session (quest or drill).
+    """Start an adaptive quest (Hydra Protocol, all selected difficulty levels).
 
-    [bold]Quest[/bold] (default): adaptive, all difficulty levels, Hydra Protocol on failure.
-    [bold]Drill[/bold] ([bold]--drill --level N[/bold]): flat quiz at one difficulty level.
-
-    Use [bold]--list[/bold], [bold]--resume[/bold], and [bold]--delete[/bold] to manage saved quests."""
+    [bold]--exam[/bold]: closed-book mode — source document not opened; updates exam support."""
     import asyncio
     from scathach.cli.session_ui import handle_event, make_answer_provider, pre_session_wizard
 
+    _require_api_key()
     conn = open_db(settings.db_path)
     try:
-        # ---- List ----
-        if list_sessions:
-            active = list_active_sessions(conn)
-            if not active:
-                console.print("[dim]No unfinished quests.[/dim]")
-                return
-            tbl = Table(title="Unfinished Quests", show_lines=True)
-            tbl.add_column("Quest ID", style="cyan", no_wrap=True)
-            tbl.add_column("Topic", style="bold")
-            tbl.add_column("Timing")
-            tbl.add_column("Started")
-            tbl.add_column("Remaining", justify="right")
-            import json as _json
-            for rec in active:
-                t_obj = get_topic_by_id(conn, rec.topic_id)
-                t_name = t_obj.name if t_obj else f"id={rec.topic_id}"
-                remaining = 0
-                if rec.question_stack:
-                    try:
-                        frames = _json.loads(rec.question_stack)
-                        remaining = sum(len(f["question_ids"]) for f in frames)
-                    except Exception:
-                        pass
-                tbl.add_row(
-                    rec.session_id, t_name, rec.timing,
-                    str(rec.created_at)[:16] if rec.created_at else "—",
-                    str(remaining),
-                )
-            console.print(tbl)
-            return
-
-        # ---- Delete ----
-        if delete is not None:
-            rec = get_session_record(conn, delete)
-            if rec is None:
-                console.print(f"[red]Quest '{delete}' not found.[/red]")
-                raise typer.Exit(code=1)
-            t_obj = get_topic_by_id(conn, rec.topic_id)
-            t_label = f"[bold]{t_obj.name}[/bold]" if t_obj else f"topic id={rec.topic_id}"
-            n = delete_session(conn, delete)
-            console.print(
-                f"[green]Deleted quest [bold]{delete}[/bold] "
-                f"({t_label}, {n} question(s) removed).[/green]"
-            )
-            return
-
-        # ---- Resume ----
-        if resume is not None:
-            _require_api_key()
-            rec = get_session_record(conn, resume)
-            if rec is None:
-                console.print(f"[red]Quest '{resume}' not found.[/red]")
-                raise typer.Exit(code=1)
-            if rec.status != "active":
-                console.print(f"[yellow]Quest '{resume}' is already complete.[/yellow]")
-                raise typer.Exit(code=1)
-            if not rec.question_stack:
-                console.print(f"[red]Quest '{resume}' has no saved state to resume.[/red]")
-                raise typer.Exit(code=1)
-            t_obj = get_topic_by_id(conn, rec.topic_id)
-            should_open = open_doc if open_doc is not None else settings.open_doc_on_session
-            _maybe_open_doc(t_obj.source_path if t_obj else None, should_open)
-            from scathach.core.question import TimingMode as _TM
-            timing_mode = _TM.TIMED if rec.timing == "timed" else _TM.UNTIMED
-            cfg = SessionConfig(
-                topic_id=rec.topic_id,
-                timing=timing_mode,
-                threshold=settings.quality_threshold,
-                num_levels=rec.num_levels,
-                hydra_retry_parent=True,
-            )
-            asyncio.run(SessionRunner(
-                conn=conn, client=_make_client(), config=cfg,
-                answer_provider=make_answer_provider(cfg.timing),
-                event_handler=handle_event,
-                restored_record=rec,
-            ).run())
-            return
-
-        # ---- Drill mode ----
-        if drill:
-            if topic is None:
-                console.print("[red]Provide a topic name: scathach session <topic> --drill --level N[/red]")
-                raise typer.Exit(code=1)
-            if level is None:
-                console.print("[red]--level N is required in drill mode.[/red]")
-                raise typer.Exit(code=1)
-            _require_api_key()
-            t_obj = get_topic_by_name(conn, topic)
-            if t_obj is None:
-                console.print(
-                    f"[red]Topic '{topic}' not found.[/red] "
-                    "Run [bold]scathach stats[/bold] to see available topics."
-                )
-                raise typer.Exit(code=1)
-            should_open = open_doc if open_doc is not None else settings.open_doc_on_session
-            _maybe_open_doc(t_obj.source_path, should_open)
-            from scathach.cli.drill_ui import run_drill_session
-            from scathach.core.drill import DRILL_MAX_QUESTIONS
-            cap = DRILL_MAX_QUESTIONS[level]
-            if count > cap:
-                console.print(f"[yellow]Count capped at {cap} for level {level}.[/yellow]")
-            timing_mode = _resolve_timing(timed, settings.timing)
-            hydra_enabled = hydra if hydra is not None else settings.hydra_in_drill
-            asyncio.run(run_drill_session(
-                conn=conn, client=_make_client(),
-                topic_id=t_obj.id, level=level, count=count,
-                timing=timing_mode,
-                threshold=threshold if threshold is not None else settings.quality_threshold,
-                hydra_enabled=hydra_enabled,
-            ))
-            return
-
-        # ---- Quest mode ----
-        if topic is None:
-            console.print(
-                "[red]Provide a topic name, or use --list / --resume.[/red]\n"
-                "  scathach session [bold]<topic>[/bold]\n"
-                "  scathach session [bold]--list[/bold]\n"
-                "  scathach session [bold]--resume <id>[/bold]"
-            )
-            raise typer.Exit(code=1)
-        _require_api_key()
         t_obj = get_topic_by_name(conn, topic)
         if t_obj is None:
             console.print(
@@ -504,16 +358,20 @@ def session(
                 "Run [bold]scathach stats[/bold] to see available topics."
             )
             raise typer.Exit(code=1)
-        should_open = open_doc if open_doc is not None else settings.open_doc_on_session
-        _maybe_open_doc(t_obj.source_path, should_open)
+        if exam:
+            _show_exam_message()
+        else:
+            _maybe_open_doc(t_obj.source_path)
         timing_mode = _resolve_timing(timed, settings.timing)
-        hydra_enabled = hydra if hydra is not None else True
         cfg = SessionConfig(
             topic_id=t_obj.id,
+            session_type="quest",
             timing=timing_mode,
             threshold=threshold if threshold is not None else settings.quality_threshold,
-            num_levels=levels or 6,
+            num_levels=levels,
             hydra_retry_parent=True,
+            hydra_enabled=True,
+            is_exam=exam,
         )
         if wizard:
             cfg = pre_session_wizard(cfg)
@@ -522,6 +380,205 @@ def session(
             answer_provider=make_answer_provider(cfg.timing),
             event_handler=handle_event,
         ).run())
+    finally:
+        conn.close()
+
+
+@session_app.command("drill")
+def session_drill(
+    topic: str = typer.Argument(..., help="Topic name to study."),
+    level: int = typer.Option(
+        ..., "--level", "-l", min=1, max=6,
+        help="Difficulty level (1–6).",
+    ),
+    count: int = typer.Option(
+        5, "--count", "-c", min=1,
+        help="Number of questions to generate.",
+    ),
+    timed: Optional[bool] = typer.Option(
+        None, "--timed/--untimed", help="Override default timing.",
+    ),
+    hydra: Optional[bool] = typer.Option(
+        None, "--hydra/--no-hydra", help="Enable Hydra Protocol on failure.",
+    ),
+    threshold: Optional[int] = typer.Option(
+        None, "--threshold", min=5, max=10, help="Override pass threshold (5–10).",
+    ),
+    exam: bool = typer.Option(
+        False, "--exam",
+        help="Closed-book exam mode: source document is not opened.",
+    ),
+) -> None:
+    """Flat quiz of freshly generated questions at a single difficulty level."""
+    import asyncio
+    from scathach.cli.session_ui import handle_event, make_answer_provider
+
+    _require_api_key()
+    conn = open_db(settings.db_path)
+    try:
+        t_obj = get_topic_by_name(conn, topic)
+        if t_obj is None:
+            console.print(
+                f"[red]Topic '{topic}' not found.[/red] "
+                "Run [bold]scathach stats[/bold] to see available topics."
+            )
+            raise typer.Exit(code=1)
+        if exam:
+            _show_exam_message()
+        else:
+            _maybe_open_doc(t_obj.source_path)
+        from scathach.core.drill import DRILL_MAX_QUESTIONS
+        cap = DRILL_MAX_QUESTIONS[level]
+        actual_count = min(count, cap)
+        if count > cap:
+            console.print(f"[yellow]Count capped at {cap} for level {level}.[/yellow]")
+        timing_mode = _resolve_timing(timed, settings.timing)
+        hydra_enabled = hydra if hydra is not None else settings.hydra_in_drill
+        cfg = SessionConfig(
+            topic_id=t_obj.id,
+            session_type="drill",
+            timing=timing_mode,
+            threshold=threshold if threshold is not None else settings.quality_threshold,
+            num_levels=level,
+            hydra_retry_parent=True,
+            hydra_enabled=hydra_enabled,
+            is_exam=exam,
+            drill_level=level,
+            drill_count=actual_count,
+        )
+        asyncio.run(SessionRunner(
+            conn=conn, client=_make_client(), config=cfg,
+            answer_provider=make_answer_provider(cfg.timing),
+            event_handler=handle_event,
+        ).run())
+    finally:
+        conn.close()
+
+
+@session_app.command("list")
+def session_list() -> None:
+    """List all unfinished sessions."""
+    import json as _json
+
+    conn = open_db(settings.db_path)
+    try:
+        active = list_active_sessions(conn)
+        if not active:
+            console.print("[dim]No unfinished sessions.[/dim]")
+            return
+        tbl = Table(title="Unfinished Sessions", show_lines=True)
+        tbl.add_column("ID", style="cyan", no_wrap=True)
+        tbl.add_column("Type", style="bold")
+        tbl.add_column("Topic", style="bold")
+        tbl.add_column("Timing")
+        tbl.add_column("Started")
+        tbl.add_column("Remaining", justify="right")
+        for rec in active:
+            t_obj = get_topic_by_id(conn, rec.topic_id)
+            t_name = t_obj.name if t_obj else f"id={rec.topic_id}"
+            remaining = 0
+            if rec.question_stack:
+                try:
+                    frames = _json.loads(rec.question_stack)
+                    remaining = sum(len(f["question_ids"]) for f in frames)
+                except Exception:
+                    pass
+            type_label = (
+                f"Drill L{rec.drill_level}" if rec.session_type == "drill" and rec.drill_level
+                else rec.session_type.capitalize()
+            )
+            tbl.add_row(
+                rec.session_id, type_label, t_name, rec.timing,
+                str(rec.created_at)[:16] if rec.created_at else "—",
+                str(remaining),
+            )
+        console.print(tbl)
+    finally:
+        conn.close()
+
+
+@session_app.command("resume")
+def session_resume(
+    session_id: str = typer.Argument(..., help="Session ID to resume."),
+) -> None:
+    """Resume an interrupted session."""
+    import asyncio
+    from scathach.cli.session_ui import handle_event, make_answer_provider
+
+    _require_api_key()
+    conn = open_db(settings.db_path)
+    try:
+        rec = get_session_record(conn, session_id)
+        if rec is None:
+            console.print(f"[red]Session '{session_id}' not found.[/red]")
+            raise typer.Exit(code=1)
+        if rec.status != "active":
+            console.print(f"[yellow]Session '{session_id}' is already complete.[/yellow]")
+            raise typer.Exit(code=1)
+        if not rec.question_stack or rec.question_stack == "[]":
+            console.print(f"[red]Session '{session_id}' has no saved state to resume.[/red]")
+            raise typer.Exit(code=1)
+        t_obj = get_topic_by_id(conn, rec.topic_id)
+        if rec.is_exam:
+            _show_exam_message()
+        else:
+            _maybe_open_doc(t_obj.source_path if t_obj else None)
+        from scathach.core.question import TimingMode as _TM
+        timing_mode = _TM.TIMED if rec.timing == "timed" else _TM.UNTIMED
+        hydra_enabled = settings.hydra_in_drill if rec.session_type == "drill" else True
+        cfg = SessionConfig(
+            topic_id=rec.topic_id,
+            session_type=rec.session_type,
+            timing=timing_mode,
+            threshold=settings.quality_threshold,
+            num_levels=rec.num_levels,
+            hydra_retry_parent=True,
+            hydra_enabled=hydra_enabled,
+            is_exam=rec.is_exam,
+            drill_level=rec.drill_level,
+        )
+        asyncio.run(SessionRunner(
+            conn=conn, client=_make_client(), config=cfg,
+            answer_provider=make_answer_provider(cfg.timing),
+            event_handler=handle_event,
+            restored_record=rec,
+        ).run())
+    finally:
+        conn.close()
+
+
+@session_app.command("delete")
+def session_delete(
+    session_id: str = typer.Argument(..., help="Session ID to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+) -> None:
+    """Permanently delete a session and all its questions."""
+    conn = open_db(settings.db_path)
+    try:
+        rec = get_session_record(conn, session_id)
+        if rec is None:
+            console.print(f"[red]Session '{session_id}' not found.[/red]")
+            raise typer.Exit(code=1)
+        t_obj = get_topic_by_id(conn, rec.topic_id)
+        t_label = f"[bold]{t_obj.name}[/bold]" if t_obj else f"topic id={rec.topic_id}"
+        type_label = (
+            f"Drill L{rec.drill_level}" if rec.session_type == "drill" and rec.drill_level
+            else rec.session_type.capitalize()
+        )
+        if not yes:
+            console.print(
+                f"[yellow]This will permanently delete {type_label} session "
+                f"[bold]{session_id}[/bold] ({t_label}) and all its questions.[/yellow]"
+            )
+            confirm = console.input("Type the session ID to confirm: ").strip()
+            if confirm != session_id:
+                console.print("[dim]Cancelled.[/dim]")
+                return
+        n = delete_session(conn, session_id)
+        console.print(
+            f"[green]Deleted {type_label} session [bold]{session_id}[/bold] "
+            f"({t_label}, {n} question(s) removed).[/green]"
+        )
     finally:
         conn.close()
 
@@ -688,9 +745,6 @@ def review(
     topic_filter: Optional[str] = typer.Option(
         None, "--topic",
         help="Restrict flash-cards and long-answers to a single topic."),
-    open_doc: Optional[bool] = typer.Option(
-        None, "--open-doc/--no-open-doc",
-        help="Open source documents before starting."),
 ) -> None:
     """Review due questions.
 
@@ -751,13 +805,6 @@ def review(
                 "all" if all_fsrs else
                 "everything"
             )
-
-        # Open docs if requested (flash/long only — others open their own docs)
-        if open_doc or (open_doc is None and settings.open_doc_on_session):
-            if mode in ("flash-cards", "all", "everything"):
-                _open_docs_for_due_questions(conn, queue, min_d=1, max_d=2)
-            if mode in ("long-answers", "all", "everything"):
-                _open_docs_for_due_questions(conn, queue, min_d=3, max_d=6)
 
         asyncio.run(_run_review_mode(
             mode, conn, _make_client(), queue, timing_mode,
@@ -845,7 +892,7 @@ def config_cmd(
         table.add_row("Hydra in review", str(settings.hydra_in_review))
         table.add_row("Hydra in drill", str(settings.hydra_in_drill))
         table.add_row("On failed review", settings.on_failed_review.value)
-        table.add_row("Open doc on session", str(settings.open_doc_on_session))
+        table.add_row("Max practice support", f"{settings.max_practice_support:.0f} days")
         table.add_row("DB path", str(settings.db_path))
         console.print(table)
         if not settings.openrouter_api_key:
@@ -973,23 +1020,6 @@ def topic_set_level(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _open_docs_for_due_questions(conn, queue: str, min_d: int, max_d: int) -> None:
-    from scathach.core.scheduler import get_scheduled_questions
-    now = datetime.now(UTC)
-    questions = get_scheduled_questions(conn, queue, limit=50, now=now,
-                                        min_difficulty=min_d, max_difficulty=max_d)
-    seen: set[int] = set()
-    for q in questions:
-        if q.topic_id in seen:
-            continue
-        seen.add(q.topic_id)
-        row = conn.execute(
-            "SELECT source_path FROM topics WHERE id = ?", (q.topic_id,)
-        ).fetchone()
-        if row and row["source_path"]:
-            _maybe_open_doc(row["source_path"], open_doc=True)
 
 
 def _write_env_var(key: str, value: str) -> None:

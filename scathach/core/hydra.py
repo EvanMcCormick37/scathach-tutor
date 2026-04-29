@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from typing import Optional
+
 from scathach.db.models import Question
 from scathach.db.repository import get_questions_below_difficulty, insert_question
 from scathach.llm.client import LLMClient, LLMError
@@ -29,6 +31,7 @@ async def spawn_subquestions(
     parent_question: Question,
     student_answer: str,
     diagnosis: str,
+    session_id: Optional[str] = None,
 ) -> list[Question]:
     """
     Spawn sub-questions targeting the diagnosed gaps in understanding.
@@ -90,6 +93,7 @@ async def spawn_subquestions(
             Question(
                 topic_id=parent_question.topic_id,
                 parent_id=parent_question.id,
+                session_id=session_id,
                 difficulty=q_data["difficulty"],
                 body=q_data["body"],
                 ideal_answer=q_data["ideal_answer"],

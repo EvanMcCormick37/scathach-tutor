@@ -76,9 +76,9 @@ class Settings(BaseSettings):
             "'choose' prompts you each time."
         ),
     )
-    open_doc_on_session: bool = Field(
-        default=False,
-        description="Whether to open the source document in the system viewer at session start.",
+    max_practice_support: float = Field(
+        default=14.0,
+        description="Maximum days of review interval contributed by practice (open-book) sessions.",
     )
 
     # Database

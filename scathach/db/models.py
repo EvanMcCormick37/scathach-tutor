@@ -17,9 +17,10 @@ class Topic:
     source_path: Optional[str] = None
     id: Optional[int] = None
     created_at: Optional[datetime] = None
-    support: float = 1.0          # FSRS-style stability for topic-level scheduling
-    next_review_at: Optional[str] = None  # ISO datetime; NULL = never reviewed
-    target_level: int = 4         # quest level cap used by topic-review
+    exam_support: float = 1.0          # stability updated by closed-book (--exam) sessions
+    practice_support: float = 0.0      # accumulator updated by open-book sessions
+    next_review_at: Optional[str] = None  # ISO datetime; NULL = never reviewed; only set on topic-review completion
+    target_level: int = 4              # quest level cap used by topic-review
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Question:
     body: str
     ideal_answer: str
     parent_id: Optional[int] = None
+    session_id: Optional[str] = None
     is_root: bool = False
     id: Optional[int] = None
     created_at: Optional[datetime] = None
@@ -53,10 +55,13 @@ class Attempt:
 class SessionRecord:
     session_id: str
     topic_id: int
-    status: str = "active"   # 'active' | 'complete'
-    timing: str = "untimed"  # 'timed' | 'untimed'
+    status: str = "active"         # 'active' | 'complete'
+    session_type: str = "quest"    # 'quest' | 'drill'
+    timing: str = "untimed"        # 'timed' | 'untimed'
     threshold: int = 7
     num_levels: int = 6
+    is_exam: bool = False
+    drill_level: Optional[int] = None   # set for drills; None for quests
     question_stack: Optional[str] = None   # JSON
     cleared_ids: Optional[str] = None      # JSON list of ints
     root_ids: Optional[str] = None         # JSON list of ints

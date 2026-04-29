@@ -19,7 +19,7 @@ from scathach.db.models import Attempt, Question, ReviewEntry, SessionRecord, To
 # ---------------------------------------------------------------------------
 
 
-_TOPIC_COLS = "id, name, source_path, content, support, next_review_at, target_level, created_at"
+_TOPIC_COLS = "id, name, source_path, content, exam_support, practice_support, next_review_at, target_level, created_at"
 
 
 def _row_to_topic(row: sqlite3.Row) -> Topic:
@@ -29,7 +29,8 @@ def _row_to_topic(row: sqlite3.Row) -> Topic:
         source_path=row["source_path"],
         content=row["content"],
         created_at=row["created_at"],
-        support=row["support"],
+        exam_support=row["exam_support"],
+        practice_support=row["practice_support"],
         next_review_at=row["next_review_at"],
         target_level=row["target_level"],
     )
@@ -79,16 +80,16 @@ def list_topics(conn: sqlite3.Connection) -> list[Topic]:
     return [_row_to_topic(r) for r in rows]
 
 
-def update_topic_support(
+def update_topic_supports(
     conn: sqlite3.Connection,
     topic_id: int,
-    new_support: float,
-    next_review_at: str,
+    exam_support: float,
+    practice_support: float,
 ) -> None:
-    """Persist updated topic support and next review date."""
+    """Persist updated exam_support and practice_support. Does NOT touch next_review_at."""
     conn.execute(
-        "UPDATE topics SET support = ?, next_review_at = ? WHERE id = ?",
-        (new_support, next_review_at, topic_id),
+        "UPDATE topics SET exam_support = ?, practice_support = ? WHERE id = ?",
+        (exam_support, practice_support, topic_id),
     )
     conn.commit()
 
@@ -128,18 +129,21 @@ def get_due_topics(
 # Questions
 # ---------------------------------------------------------------------------
 
+_QUESTION_COLS = "id, topic_id, parent_id, session_id, difficulty, body, ideal_answer, is_root, created_at"
+
 
 def insert_question(conn: sqlite3.Connection, question: Question) -> Question:
     """Insert a new question and return it with id set."""
     cursor = conn.execute(
         """
-        INSERT INTO questions (topic_id, parent_id, difficulty, body, ideal_answer, is_root)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO questions (topic_id, parent_id, session_id, difficulty, body, ideal_answer, is_root)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         RETURNING id, created_at
         """,
         (
             question.topic_id,
             question.parent_id,
+            question.session_id,
             question.difficulty,
             question.body,
             question.ideal_answer,
@@ -156,10 +160,7 @@ def insert_question(conn: sqlite3.Connection, question: Question) -> Question:
 def get_question(conn: sqlite3.Connection, question_id: int) -> Optional[Question]:
     """Fetch a question by id."""
     row = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
-        FROM questions WHERE id = ?
-        """,
+        f"SELECT {_QUESTION_COLS} FROM questions WHERE id = ?",
         (question_id,),
     ).fetchone()
     if row is None:
@@ -203,10 +204,7 @@ def delete_question(conn: sqlite3.Connection, question_id: int) -> None:
 def get_children(conn: sqlite3.Connection, question_id: int) -> list[Question]:
     """Return all direct child questions of a given question."""
     rows = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
-        FROM questions WHERE parent_id = ? ORDER BY difficulty ASC
-        """,
+        f"SELECT {_QUESTION_COLS} FROM questions WHERE parent_id = ? ORDER BY difficulty ASC",
         (question_id,),
     ).fetchall()
     return [_row_to_question(r) for r in rows]
@@ -219,11 +217,7 @@ def get_questions_by_difficulty(
 ) -> list[Question]:
     """Return all questions (root and sub) for a topic at a specific difficulty level."""
     rows = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
-        FROM questions WHERE topic_id = ? AND difficulty = ?
-        ORDER BY created_at ASC
-        """,
+        f"SELECT {_QUESTION_COLS} FROM questions WHERE topic_id = ? AND difficulty = ? ORDER BY created_at ASC",
         (topic_id, difficulty),
     ).fetchall()
     return [_row_to_question(r) for r in rows]
@@ -236,11 +230,7 @@ def get_questions_below_difficulty(
 ) -> list[Question]:
     """Return all questions (root and sub) for a topic with difficulty < max_difficulty_exclusive."""
     rows = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
-        FROM questions WHERE topic_id = ? AND difficulty < ?
-        ORDER BY difficulty ASC, created_at ASC
-        """,
+        f"SELECT {_QUESTION_COLS} FROM questions WHERE topic_id = ? AND difficulty < ? ORDER BY difficulty ASC, created_at ASC",
         (topic_id, max_difficulty_exclusive),
     ).fetchall()
     return [_row_to_question(r) for r in rows]
@@ -249,11 +239,7 @@ def get_questions_below_difficulty(
 def get_root_questions(conn: sqlite3.Connection, topic_id: int) -> list[Question]:
     """Return all root questions for a topic, ordered by difficulty."""
     rows = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
-        FROM questions WHERE topic_id = ? AND is_root = 1
-        ORDER BY difficulty ASC
-        """,
+        f"SELECT {_QUESTION_COLS} FROM questions WHERE topic_id = ? AND is_root = 1 ORDER BY difficulty ASC",
         (topic_id,),
     ).fetchall()
     return [_row_to_question(r) for r in rows]
@@ -272,8 +258,8 @@ def get_prior_root_questions(
     across sessions.
     """
     rows = conn.execute(
-        """
-        SELECT id, topic_id, parent_id, difficulty, body, ideal_answer, is_root, created_at
+        f"""
+        SELECT {_QUESTION_COLS}
         FROM (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -333,6 +319,7 @@ def _row_to_question(row: sqlite3.Row) -> Question:
         id=row["id"],
         topic_id=row["topic_id"],
         parent_id=row["parent_id"],
+        session_id=row["session_id"],
         difficulty=row["difficulty"],
         body=row["body"],
         ideal_answer=row["ideal_answer"],
@@ -524,7 +511,7 @@ def get_due_questions(
     params.append(limit)
     rows = conn.execute(
         f"""
-        SELECT q.id, q.topic_id, q.parent_id, q.difficulty, q.body,
+        SELECT q.id, q.topic_id, q.parent_id, q.session_id, q.difficulty, q.body,
                q.ideal_answer, q.is_root, q.created_at
         FROM {table} rq
         JOIN questions q ON q.id = rq.question_id
@@ -564,17 +551,20 @@ def create_session_record(conn: sqlite3.Connection, record: SessionRecord) -> Se
     conn.execute(
         """
         INSERT INTO sessions
-            (id, topic_id, status, timing, threshold, num_levels,
-             question_stack, cleared_ids, root_ids)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, topic_id, status, session_type, timing, threshold, num_levels,
+             is_exam, drill_level, question_stack, cleared_ids, root_ids)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.session_id,
             record.topic_id,
             record.status,
+            record.session_type,
             record.timing,
             record.threshold,
             record.num_levels,
+            int(record.is_exam),
+            record.drill_level,
             record.question_stack,
             record.cleared_ids,
             record.root_ids,
@@ -589,16 +579,30 @@ def update_session_state(
     session_id: str,
     question_stack: str,
     cleared_ids: str,
+    root_ids: Optional[str] = None,
 ) -> None:
-    """Persist current question stack and cleared list for an active session."""
-    conn.execute(
-        """
-        UPDATE sessions
-        SET question_stack = ?, cleared_ids = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (question_stack, cleared_ids, session_id),
-    )
+    """Persist current question stack and cleared list for an active session.
+
+    Pass root_ids to also update that column (used once after initial question generation).
+    """
+    if root_ids is not None:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET question_stack = ?, cleared_ids = ?, root_ids = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (question_stack, cleared_ids, root_ids, session_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET question_stack = ?, cleared_ids = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (question_stack, cleared_ids, session_id),
+        )
     conn.commit()
 
 
@@ -643,8 +647,8 @@ def get_session_record(
     """Fetch a session record by ID."""
     row = conn.execute(
         """
-        SELECT id, topic_id, status, timing, threshold, num_levels,
-               question_stack, cleared_ids, root_ids, created_at, updated_at
+        SELECT id, topic_id, status, session_type, timing, threshold, num_levels,
+               is_exam, drill_level, question_stack, cleared_ids, root_ids, created_at, updated_at
         FROM sessions WHERE id = ?
         """,
         (session_id,),
@@ -658,8 +662,8 @@ def list_active_sessions(conn: sqlite3.Connection) -> list[SessionRecord]:
     """Return all sessions with status='active', newest first."""
     rows = conn.execute(
         """
-        SELECT id, topic_id, status, timing, threshold, num_levels,
-               question_stack, cleared_ids, root_ids, created_at, updated_at
+        SELECT id, topic_id, status, session_type, timing, threshold, num_levels,
+               is_exam, drill_level, question_stack, cleared_ids, root_ids, created_at, updated_at
         FROM sessions WHERE status = 'active' ORDER BY created_at DESC
         """,
     ).fetchall()
@@ -696,9 +700,12 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         session_id=row["id"],
         topic_id=row["topic_id"],
         status=row["status"],
+        session_type=row["session_type"] or "quest",
         timing=row["timing"],
         threshold=row["threshold"],
         num_levels=row["num_levels"],
+        is_exam=bool(row["is_exam"]) if row["is_exam"] is not None else False,
+        drill_level=row["drill_level"],
         question_stack=row["question_stack"],
         cleared_ids=row["cleared_ids"],
         root_ids=row["root_ids"],

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from typing import Optional
+
 from scathach.db.models import Question
 from scathach.db.repository import get_prior_root_questions, get_topic_by_id, insert_question
 from scathach.llm.client import LLMClient, LLMError
@@ -30,6 +32,7 @@ async def generate_drill_questions(
     topic_id: int,
     level: int,
     count: int,
+    session_id: Optional[str] = None,
 ) -> list[Question]:
     """
     Generate `count` fresh questions for `topic_id` all at `level`.
@@ -78,6 +81,7 @@ async def generate_drill_questions(
             conn,
             Question(
                 topic_id=topic_id,
+                session_id=session_id,
                 difficulty=q_data["difficulty"],
                 body=q_data["body"],
                 ideal_answer=q_data["ideal_answer"],

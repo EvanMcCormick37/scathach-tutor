@@ -18,11 +18,12 @@ from typing import Any, Awaitable, Callable, Optional
 from scathach.core.hydra import HydraError, spawn_subquestions
 from scathach.core.question import DifficultyLevel, TimingMode
 from scathach.core.scoring import ScoringError, score_answer
-from scathach.core.topic_support import apply_topic_support_update, compute_new_support
+from scathach.core.topic_support import compute_new_exam_support, compute_practice_delta
 from scathach.db.models import Attempt, Question, SessionRecord
 from scathach.db.repository import (
     complete_session,
     create_session_record,
+    delete_session,
     get_latest_attempt,
     get_prior_root_questions,
     get_question,
@@ -30,6 +31,7 @@ from scathach.db.repository import (
     insert_question,
     record_attempt,
     update_session_state,
+    update_topic_supports,
     upsert_review_entry,
 )
 from scathach.db.models import ReviewEntry
@@ -52,6 +54,7 @@ async def generate_root_questions(
     client: LLMClient,
     topic_id: int,
     num_levels: int = 6,
+    session_id: Optional[str] = None,
 ) -> list[Question]:
     """
     Generate root questions for a topic using the LLM.
@@ -88,6 +91,7 @@ async def generate_root_questions(
             conn,
             Question(
                 topic_id=topic_id,
+                session_id=session_id,
                 difficulty=q_data["difficulty"],
                 body=q_data["body"],
                 ideal_answer=q_data["ideal_answer"],
@@ -139,11 +143,15 @@ class AnswerScored(SessionEvent):
 @dataclass
 class GeneratingCurriculum(SessionEvent):
     topic_name: str
+    session_type: str = "quest"
+    drill_level: Optional[int] = None
+    drill_count: Optional[int] = None
 
 
 @dataclass
 class CurriculumReady(SessionEvent):
     num_questions: int
+    session_type: str = "quest"
 
 
 @dataclass
@@ -181,6 +189,11 @@ class SessionConfig:
     threshold: int = 7
     num_levels: int = 6
     hydra_retry_parent: bool = True
+    hydra_enabled: bool = True
+    is_exam: bool = False      # True = closed-book; updates exam_support. False = open-book; updates practice_support.
+    session_type: str = "quest"  # 'quest' | 'drill'
+    drill_level: Optional[int] = None
+    drill_count: int = 5
 
 
 class SessionRunner:
@@ -281,7 +294,8 @@ class SessionRunner:
         # Fetch topic once for name display and support tracking.
         _topic = get_topic_by_id(self.conn, self.config.topic_id)
         _topic_target_level: int = _topic.target_level if _topic else 4
-        _topic_support: float = _topic.support if _topic else 1.0
+        _topic_exam_support: float = _topic.exam_support if _topic else 1.0
+        _topic_practice_support: float = _topic.practice_support if _topic else 0.0
 
         if self._restored_record is not None:
             # --- Resume: restore stack from DB ---
@@ -295,20 +309,58 @@ class SessionRunner:
                     if q is not None:
                         self._cleared.append(q)
         else:
-            # --- Fresh start: generate questions and create session row ---
+            # --- Fresh start ---
             self.state = SessionState.GENERATING
             topic = _topic
             topic_name = topic.name if topic else f"topic {self.config.topic_id}"
-            await self.event_handler(GeneratingCurriculum(topic_name=topic_name))
+
+            # Create the session row FIRST so questions can reference it via FK.
+            create_session_record(self.conn, SessionRecord(
+                session_id=self.session_id,
+                topic_id=self.config.topic_id,
+                session_type=self.config.session_type,
+                timing=self.config.timing.value,
+                threshold=self.config.threshold,
+                num_levels=self.config.num_levels,
+                is_exam=self.config.is_exam,
+                drill_level=self.config.drill_level,
+                question_stack="[]",
+                cleared_ids="[]",
+                root_ids="[]",
+            ))
+
+            await self.event_handler(GeneratingCurriculum(
+                topic_name=topic_name,
+                session_type=self.config.session_type,
+                drill_level=self.config.drill_level,
+                drill_count=self.config.drill_count,
+            ))
             try:
-                root_questions = await generate_root_questions(
-                    self.conn, self.client, self.config.topic_id, self.config.num_levels
-                )
+                if self.config.session_type == "drill":
+                    from scathach.core.drill import DrillError, generate_drill_questions
+                    try:
+                        root_questions = await generate_drill_questions(
+                            self.conn, self.client, self.config.topic_id,
+                            self.config.drill_level, self.config.drill_count,
+                            session_id=self.session_id,
+                        )
+                    except DrillError as exc:
+                        raise GenerationError(str(exc)) from exc
+                else:
+                    root_questions = await generate_root_questions(
+                        self.conn, self.client, self.config.topic_id, self.config.num_levels,
+                        session_id=self.session_id,
+                    )
             except GenerationError as exc:
+                # Remove the placeholder session row — nothing was generated.
+                delete_session(self.conn, self.session_id)
                 self.state = SessionState.ABORTED
                 await self.event_handler(SessionAborted(reason=str(exc)))
                 return
-            await self.event_handler(CurriculumReady(num_questions=len(root_questions)))
+            await self.event_handler(CurriculumReady(
+                num_questions=len(root_questions),
+                session_type=self.config.session_type,
+            ))
 
             # Stack of (question_list, parent_question_or_None, orig_size, seen_ids)
             # NOTE: use a copy so root_questions stays an immutable snapshot for index lookups.
@@ -316,19 +368,14 @@ class SessionRunner:
                 (list(root_questions), None, len(root_questions), [])
             ]
 
-            # Persist initial session row
+            # Backfill the session row with the actual question data now that it exists.
             initial_stack = self._serialize_stack(question_stack)
             root_ids_json = json.dumps([q.id for q in root_questions])
-            create_session_record(self.conn, SessionRecord(
-                session_id=self.session_id,
-                topic_id=self.config.topic_id,
-                timing=self.config.timing.value,
-                threshold=self.config.threshold,
-                num_levels=self.config.num_levels,
-                question_stack=initial_stack,
-                cleared_ids="[]",
+            update_session_state(
+                self.conn, self.session_id,
+                initial_stack, "[]",
                 root_ids=root_ids_json,
-            ))
+            )
 
         try:
             while question_stack:
@@ -348,7 +395,7 @@ class SessionRunner:
                 # --- Compute progress index for the header ---
                 if depth == 0:
                     q_index = root_questions.index(self._root_ancestor(question, root_questions)) + 1
-                    q_total = self.config.num_levels
+                    q_total = len(root_questions)
                 else:
                     # Track first-seen order so retries show the same ordinal.
                     if question.id not in seen_ids:
@@ -404,14 +451,17 @@ class SessionRunner:
 
                 # --- Update topic support for first-time root questions ---
                 if not is_hydra and not has_prior_attempt:
-                    _topic_support = compute_new_support(
-                        _topic_support,
-                        attempt.final_score,
-                        question.difficulty,
-                        _topic_target_level,
-                    )
-                    apply_topic_support_update(
-                        self.conn, self.config.topic_id, _topic_support
+                    if self.config.is_exam:
+                        _topic_exam_support = compute_new_exam_support(
+                            _topic_exam_support, attempt.final_score
+                        )
+                    else:
+                        _topic_practice_support += compute_practice_delta(
+                            attempt.passed, question.difficulty, _topic_target_level
+                        )
+                    update_topic_supports(
+                        self.conn, self.config.topic_id,
+                        _topic_exam_support, _topic_practice_support,
                     )
 
                 # --- Emit result ---
@@ -436,39 +486,44 @@ class SessionRunner:
                             state="learning",
                         ))
                 else:
-                    # Failed — spawn sub-questions and push them onto the stack
-                    self.state = SessionState.HYDRA_SPAWNING
-                    await self.event_handler(HydraSpawning(parent_question=question))
-                    try:
-                        subquestions = await spawn_subquestions(
-                            conn=self.conn,
-                            client=self.client,
-                            parent_question=question,
-                            student_answer=answer_text,
-                            diagnosis=diagnosis,
-                        )
-                    except HydraError:
-                        # If Hydra fails, just re-queue the same question
-                        subquestions = []
-
-                    await self.event_handler(HydraSpawned(
-                        subquestions=subquestions,
-                        parent_question=question,
-                        num_levels=self.config.num_levels,
-                    ))
-
-                    if subquestions:
-                        if self.config.hydra_retry_parent:
-                            # Keep parent at position 0 — re-asked immediately after hydra clears.
-                            pass
-                        else:
-                            # Drop parent from queue — session moves on after hydra.
-                            current_group.pop(0)
-                        question_stack.append((list(subquestions), question, len(subquestions), []))
-                    else:
-                        # Hydra generation failed — move parent to end for a later retry.
+                    # Failed
+                    if not self.config.hydra_enabled:
+                        # Hydra disabled — skip the failed question and continue.
                         current_group.pop(0)
-                        current_group.append(question)
+                    else:
+                        # Spawn sub-questions and push them onto the stack.
+                        self.state = SessionState.HYDRA_SPAWNING
+                        await self.event_handler(HydraSpawning(parent_question=question))
+                        try:
+                            subquestions = await spawn_subquestions(
+                                conn=self.conn,
+                                client=self.client,
+                                parent_question=question,
+                                student_answer=answer_text,
+                                diagnosis=diagnosis,
+                                session_id=self.session_id,
+                            )
+                        except HydraError:
+                            subquestions = []
+
+                        await self.event_handler(HydraSpawned(
+                            subquestions=subquestions,
+                            parent_question=question,
+                            num_levels=self.config.num_levels,
+                        ))
+
+                        if subquestions:
+                            if self.config.hydra_retry_parent:
+                                # Keep parent at position 0 — re-asked immediately after hydra clears.
+                                pass
+                            else:
+                                # Drop parent from queue — session moves on after hydra.
+                                current_group.pop(0)
+                            question_stack.append((list(subquestions), question, len(subquestions), []))
+                        else:
+                            # Hydra generation failed — move parent to end for a later retry.
+                            current_group.pop(0)
+                            current_group.append(question)
 
                 # Persist state after each answer so Ctrl+C can resume from here
                 self._persist_state(question_stack)

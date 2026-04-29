@@ -7,6 +7,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
+from scathach.db.repository import get_topics_stats
+
 from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
@@ -23,7 +25,7 @@ def render_stats(
     show_score_dist: bool = False,
 ) -> None:
     """Render the stats dashboard. Pass show_topics/show_review=False to restrict output."""
-    topics = _get_topics_stats(conn) if show_topics else None
+    topics = get_topics_stats(conn, status_filter="active") if show_topics else None
 
     if show_topics and not topics:
         console.print("[yellow]No topics yet. Run [bold]scathach ingest <file>[/bold] to get started.[/yellow]")
@@ -40,8 +42,6 @@ def render_stats(
         topic_table.add_column("Questions", justify="right")
         topic_table.add_column("Avg Difficulty", justify="right")
         topic_table.add_column("Avg Score", justify="right")
-        topic_table.add_column("Source", style="dim")
-        topic_table.add_column("Created", style="dim")
 
         for t in topics:
             avg_difficulty = f"{t['avg_difficulty']:.1f}" if t["avg_difficulty"] is not None else "—"
@@ -52,8 +52,6 @@ def render_stats(
                 str(t["total_questions"]),
                 avg_difficulty,
                 avg_score,
-                t["source_path"] or "(pasted text)",
-                str(t["created_at"]),
             )
         console.print(topic_table)
 
@@ -95,25 +93,7 @@ def render_stats(
         console.print(dist_table)
 
 
-def _get_topics_stats(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("""
-        SELECT t.id, t.name, t.source_path, t.created_at,
-               COUNT(DISTINCT q.id) AS total_questions,
-               ROUND(AVG(q.difficulty), 1) AS avg_difficulty,
-               ROUND(AVG(a.final_score), 1) AS avg_score
-        FROM topics t
-        LEFT JOIN questions q ON q.topic_id = t.id
-        LEFT JOIN attempts a ON a.question_id = q.id
-        GROUP BY t.id
-        ORDER BY t.created_at DESC
-    """).fetchall()
-    return [dict(r) for r in rows]
-
-
 def _get_queue_stats(conn: sqlite3.Connection) -> list[dict]:
-    from scathach.config import settings
-    from scathach.core.topic_review import get_eligible_pairs
-
     now = datetime.now(UTC)
     now_str = now.isoformat()
     week_str = now.replace(hour=23, minute=59, second=59).isoformat()
@@ -146,21 +126,17 @@ def _get_queue_stats(conn: sqlite3.Connection) -> list[dict]:
         total, due_now, due_week = _range_counts(min_d, max_d)
         result.append({"queue": label, "total": total, "due_now": due_now, "due_week": due_week})
 
-    # Topics (next_review_at IS NULL means never reviewed → counts as due)
-    total_topics = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+    # Topics — active only (retired topics are excluded from scheduled review)
+    total_topics = conn.execute("SELECT COUNT(*) FROM topics WHERE status = 'active'").fetchone()[0]
     due_now_topics = conn.execute(
-        "SELECT COUNT(*) FROM topics WHERE next_review_at IS NULL OR next_review_at <= ?",
+        "SELECT COUNT(*) FROM topics WHERE status = 'active' AND (next_review_at IS NULL OR next_review_at <= ?)",
         (now_str,),
     ).fetchone()[0]
     due_week_topics = conn.execute(
-        "SELECT COUNT(*) FROM topics WHERE next_review_at IS NULL OR next_review_at <= ?",
+        "SELECT COUNT(*) FROM topics WHERE status = 'active' AND (next_review_at IS NULL OR next_review_at <= ?)",
         (week_str,),
     ).fetchone()[0]
     result.append({"queue": "Topics", "total": total_topics, "due_now": due_now_topics, "due_week": due_week_topics})
-
-    # New Questions — eligibility-based, no time dimension
-    eligible = len(get_eligible_pairs(conn, settings.quality_threshold))
-    result.append({"queue": "New Questions", "total": None, "due_now": eligible, "due_week": None})
 
     return result
 

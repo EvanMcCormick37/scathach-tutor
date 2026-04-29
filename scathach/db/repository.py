@@ -19,7 +19,7 @@ from scathach.db.models import Attempt, Question, ReviewEntry, SessionRecord, To
 # ---------------------------------------------------------------------------
 
 
-_TOPIC_COLS = "id, name, source_path, content, exam_support, practice_support, next_review_at, target_level, created_at"
+_TOPIC_COLS = "id, name, source_path, content, status, exam_support, practice_support, next_review_at, target_level, created_at"
 
 
 def _row_to_topic(row: sqlite3.Row) -> Topic:
@@ -29,6 +29,7 @@ def _row_to_topic(row: sqlite3.Row) -> Topic:
         source_path=row["source_path"],
         content=row["content"],
         created_at=row["created_at"],
+        status=row["status"] or "active",
         exam_support=row["exam_support"],
         practice_support=row["practice_support"],
         next_review_at=row["next_review_at"],
@@ -110,19 +111,72 @@ def get_due_topics(
     now: Optional[datetime] = None,
 ) -> list[Topic]:
     """
-    Return topics whose next_review_at <= now, sorted most-overdue first.
+    Return active topics whose next_review_at <= now, sorted most-overdue first.
     Topics with next_review_at IS NULL (never reviewed) come first.
+    Retired topics are excluded.
     """
     now_str = (now or datetime.now(UTC)).isoformat()
     rows = conn.execute(
         f"""
         SELECT {_TOPIC_COLS} FROM topics
-        WHERE next_review_at IS NULL OR next_review_at <= ?
+        WHERE status = 'active'
+          AND (next_review_at IS NULL OR next_review_at <= ?)
         ORDER BY next_review_at ASC
         """,
         (now_str,),
     ).fetchall()
     return [_row_to_topic(r) for r in rows]
+
+
+def set_topic_status(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    status: str,
+) -> None:
+    """Set the status of a topic ('active' or 'retired')."""
+    conn.execute(
+        "UPDATE topics SET status = ? WHERE id = ?",
+        (status, topic_id),
+    )
+    conn.commit()
+
+
+def get_topics_stats(
+    conn: sqlite3.Connection,
+    status_filter: Optional[str] = "active",
+) -> list[dict]:
+    """
+    Return aggregate stats per topic with optional status filtering.
+
+    status_filter: 'active' (default) | 'retired' | None or 'all' for every topic.
+
+    Returned dicts include all topic columns plus:
+      total_questions, avg_difficulty, avg_score.
+    """
+    if status_filter in (None, "all"):
+        where = ""
+        params: list = []
+    else:
+        where = "WHERE t.status = ?"
+        params = [status_filter]
+
+    rows = conn.execute(
+        f"""
+        SELECT t.id, t.name, t.source_path, t.created_at, t.status,
+               t.exam_support, t.practice_support, t.next_review_at, t.target_level,
+               COUNT(DISTINCT q.id)          AS total_questions,
+               ROUND(AVG(q.difficulty), 1)   AS avg_difficulty,
+               ROUND(AVG(a.final_score), 1)  AS avg_score
+        FROM topics t
+        LEFT JOIN questions q ON q.topic_id = t.id
+        LEFT JOIN attempts  a ON a.question_id = q.id
+        {where}
+        GROUP BY t.id
+        ORDER BY t.created_at DESC
+        """,
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -668,31 +722,6 @@ def list_active_sessions(conn: sqlite3.Connection) -> list[SessionRecord]:
         """,
     ).fetchall()
     return [_row_to_session(r) for r in rows]
-
-
-def get_topic_level_stats(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """
-    Return aggregate stats per (topic_id, difficulty) pair that have more than
-    one attempt recorded.
-
-    Columns: topic_id, difficulty, attempt_count, avg_final_score,
-             latest_question_created_at.
-    Used by topic-review to identify struggling or stale topic+level combos.
-    """
-    return conn.execute(
-        """
-        SELECT
-            q.topic_id,
-            q.difficulty,
-            COUNT(a.id) AS attempt_count,
-            COALESCE(AVG(a.final_score), 0.0) AS avg_final_score,
-            MAX(q.created_at) AS latest_question_created_at
-        FROM questions q
-        LEFT JOIN attempts a ON a.question_id = q.id
-        GROUP BY q.topic_id, q.difficulty
-        HAVING COUNT(a.id) > 1
-        """
-    ).fetchall()
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:

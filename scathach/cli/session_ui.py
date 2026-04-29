@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import webbrowser
+from pathlib import Path
 from typing import Optional
 
 from prompt_toolkit import PromptSession
@@ -203,13 +205,45 @@ def _add_editor_binding(kb: KeyBindings) -> None:
         run_in_terminal(_launch)
 
 
+def _open_source_doc(source_path: str) -> None:
+    """Open the source document with the system default application."""
+    if source_path.startswith(("http://", "https://")):
+        try:
+            webbrowser.open(source_path)
+        except Exception:
+            pass
+        return
+    p = Path(source_path)
+    if not p.exists():
+        return
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(p)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(p)], check=False)
+    except Exception:
+        pass
+
+
+def _add_doc_binding(kb: KeyBindings, source_path: Optional[str]) -> None:
+    """Register Ctrl+O on `kb` to open the source document. No-op if source_path is None."""
+    if not source_path:
+        return
+
+    @kb.add("c-o")
+    def open_doc(event):  # type: ignore[no-untyped-def]
+        run_in_terminal(lambda: _open_source_doc(source_path))
+
+
 # ---------------------------------------------------------------------------
 # Answer input
 # ---------------------------------------------------------------------------
 
 
 async def _get_answer_untimed(
-    question: Question, allow_toss: bool = False
+    question: Question, allow_toss: bool = False, source_path: Optional[str] = None
 ) -> tuple[str, Optional[float]]:
     """Collect a multiline answer without a timer. Escape+Enter to submit."""
     kb = KeyBindings()
@@ -226,9 +260,12 @@ async def _get_answer_untimed(
             event.current_buffer.validate_and_handle()
 
     _add_editor_binding(kb)
+    _add_doc_binding(kb, source_path)
 
     session: PromptSession = PromptSession(key_bindings=kb)
     hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
+    if source_path:
+        hint += ", [bold]Ctrl+O[/bold] to open doc"
     if allow_toss:
         hint += ", [bold]Ctrl+T[/bold] to toss"
     console.print(hint + ".[/dim]")
@@ -240,7 +277,7 @@ async def _get_answer_untimed(
     return answer.strip(), None
 
 async def _get_answer_timed(
-    question: Question, allow_toss: bool = False
+    question: Question, allow_toss: bool = False, source_path: Optional[str] = None
 ) -> tuple[str, float]:
     """Collect an answer under the dual-zone timer."""
     dl = DifficultyLevel.from_int(question.difficulty)
@@ -249,6 +286,8 @@ async def _get_answer_timed(
     toss_flag = [False]
 
     hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
+    if source_path:
+        hint += ", [bold]Ctrl+O[/bold] to open doc"
     if allow_toss:
         hint += ", [bold]Ctrl+T[/bold] to toss"
     console.print(hint + f". Time limit: {dl.time_limit_s}s[/dim]")
@@ -266,6 +305,7 @@ async def _get_answer_timed(
             event.current_buffer.validate_and_handle()
 
     _add_editor_binding(kb)
+    _add_doc_binding(kb, source_path)
     
     _BAR_WIDTH = 30
 
@@ -494,10 +534,10 @@ def _render_complete(event: SessionComplete) -> None:
 # ---------------------------------------------------------------------------
 
 
-def make_answer_provider(timing: TimingMode):
+def make_answer_provider(timing: TimingMode, source_path: Optional[str] = None):
     """Return the appropriate answer-collection coroutine for the given timing mode."""
     async def provider(question: Question, timed: bool) -> tuple[str, Optional[float]]:
         if timed:
-            return await _get_answer_timed(question)
-        return await _get_answer_untimed(question)
+            return await _get_answer_timed(question, source_path=source_path)
+        return await _get_answer_untimed(question, source_path=source_path)
     return provider

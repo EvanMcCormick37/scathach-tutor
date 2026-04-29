@@ -66,6 +66,7 @@ def update_schedule(
     question_id: int,
     final_score: int,
     queue: Literal["timed", "untimed"],
+    difficulty: int = 1,
     now: Optional[datetime] = None,
 ) -> ReviewEntry:
     """
@@ -76,6 +77,7 @@ def update_schedule(
         question_id:  The question that was just answered.
         final_score:  The final score (0–10) after time penalty.
         queue:        Which queue to update ("timed" or "untimed").
+        difficulty:   Question difficulty level (1–6); seeds initial stability for new entries.
         now:          Current time (injectable for testing; defaults to UTC now).
 
     Returns:
@@ -84,7 +86,7 @@ def update_schedule(
     now = now or datetime.now(UTC)
     existing = get_review_entry(conn, question_id, queue)
 
-    current_stability = existing.stability if existing else 1.0
+    current_stability = existing.stability if existing else float(difficulty)
     current_state = existing.state if existing else STATE_NEW
 
     new_stability = _next_stability(current_stability, final_score)

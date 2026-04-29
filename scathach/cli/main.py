@@ -28,6 +28,7 @@ from scathach.db.repository import (
     get_topic_by_name,
     list_active_sessions,
     rename_topic,
+    set_topic_status,
     set_topic_target_level,
 )
 from scathach.db.schema import open_db
@@ -158,7 +159,6 @@ Quick start:
   [bold]scathach review --flash-cards[/bold]            Level 1–2 FSRS review
   [bold]scathach review --long-answers[/bold]           Level 3–6 FSRS review
   [bold]scathach review --topics[/bold]                 Quest for each due topic
-  [bold]scathach review --new-questions[/bold]          Fresh questions for weak spots
   [bold]scathach stats[/bold]                           Progress dashboard
 
 Tip: drop documents into [bold]~/.scathach/docs/[/bold] and run [bold]scathach ingest[/bold] to pick them all up.
@@ -377,7 +377,7 @@ def session_quest(
             cfg = pre_session_wizard(cfg)
         asyncio.run(SessionRunner(
             conn=conn, client=_make_client(), config=cfg,
-            answer_provider=make_answer_provider(cfg.timing),
+            answer_provider=make_answer_provider(cfg.timing, source_path=None if exam else t_obj.source_path),
             event_handler=handle_event,
         ).run())
     finally:
@@ -448,7 +448,7 @@ def session_drill(
         )
         asyncio.run(SessionRunner(
             conn=conn, client=_make_client(), config=cfg,
-            answer_provider=make_answer_provider(cfg.timing),
+            answer_provider=make_answer_provider(cfg.timing, source_path=None if exam else t_obj.source_path),
             event_handler=handle_event,
         ).run())
     finally:
@@ -539,7 +539,10 @@ def session_resume(
         )
         asyncio.run(SessionRunner(
             conn=conn, client=_make_client(), config=cfg,
-            answer_provider=make_answer_provider(cfg.timing),
+            answer_provider=make_answer_provider(
+                cfg.timing,
+                source_path=None if rec.is_exam else (t_obj.source_path if t_obj else None),
+            ),
             event_handler=handle_event,
             restored_record=rec,
         ).run())
@@ -584,7 +587,7 @@ def session_delete(
 
 
 # ---------------------------------------------------------------------------
-# review  (flash-cards / long-answers / topics / new-questions)
+# review  (flash-cards / long-answers / topics)
 # ---------------------------------------------------------------------------
 
 
@@ -595,7 +598,6 @@ def _interactive_review_selector(
 ) -> Optional[str]:
     """Show the interactive review mode selector. Returns a mode string or None to quit."""
     from scathach.core.scheduler import get_scheduled_questions
-    from scathach.core.topic_review import get_eligible_pairs
     from scathach.db.repository import get_due_topics
 
     now = datetime.now(UTC)
@@ -606,7 +608,6 @@ def _interactive_review_selector(
         conn, queue, limit=999, now=now, min_difficulty=3, max_difficulty=6,
     ))
     topics_due = len(get_due_topics(conn, now))
-    new_q_count = len(get_eligible_pairs(conn, threshold))
 
     def _count(n: int, label: str = "due") -> str:
         col = "green" if n > 0 else "dim"
@@ -615,28 +616,26 @@ def _interactive_review_selector(
     console.print(Panel(
         "\n".join([
             "  What would you like to review?\n",
-            f"  [[bold]f[/bold]]  Flash cards    — {_count(flash_count)}  (levels 1–2)",
-            f"  [[bold]l[/bold]]  Long answers   — {_count(long_count)}  (levels 3–6)",
-            f"  [[bold]t[/bold]]  Topics         — {_count(topics_due, 'due')}",
-            f"  [[bold]n[/bold]]  New questions  — {_count(new_q_count, 'eligible pairs')}",
-            "  [[bold]a[/bold]]  All            — flash cards + long answers",
-            "  [[bold]e[/bold]]  Everything     — all four modes",
+            f"  [[bold]f[/bold]]  Flash cards  — {_count(flash_count)}  (levels 1–2)",
+            f"  [[bold]l[/bold]]  Long answers — {_count(long_count)}  (levels 3–6)",
+            f"  [[bold]t[/bold]]  Topics       — {_count(topics_due, 'due')}",
+            "  [[bold]a[/bold]]  All          — flash cards + long answers",
+            "  [[bold]e[/bold]]  Everything   — all three modes",
             "  [[bold]q[/bold]]  Quit",
         ]),
         title="Review",
         border_style="cyan",
     ))
 
-    if flash_count + long_count + topics_due + new_q_count == 0:
+    if flash_count + long_count + topics_due == 0:
         console.print("[green]Nothing due across all modes. Great work![/green]")
         return None
 
-    choice = console.input("  Choice [f/l/t/n/a/e/q]: ").strip().lower()
+    choice = console.input("  Choice [f/l/t/a/e/q]: ").strip().lower()
     return {
         "f": "flash-cards",
         "l": "long-answers",
         "t": "topics",
-        "n": "new-questions",
         "a": "all",
         "e": "everything",
         "q": None,
@@ -686,14 +685,6 @@ async def _run_review_mode(
         else:
             console.print("[green]Topics: nothing due.[/green]")
 
-    async def _new_q():
-        from scathach.cli.new_question_review_ui import run_new_question_review_session
-        from scathach.core.topic_review import get_eligible_pairs
-        if get_eligible_pairs(conn, threshold):
-            await run_new_question_review_session(conn, client, threshold, timing_mode)
-        else:
-            console.print("[green]New questions: no eligible pairs.[/green]")
-
     if mode == "flash-cards":
         await run_review_session(conn, client, queue, timing_mode, threshold,
                                  limit, on_failed, topic_id=topic_id)
@@ -705,9 +696,6 @@ async def _run_review_mode(
         from scathach.cli.topic_review_ui import run_topic_review
         await run_topic_review(conn, client, timing_mode, threshold,
                                True, handle_event, make_answer_provider)
-    elif mode == "new-questions":
-        from scathach.cli.new_question_review_ui import run_new_question_review_session
-        await run_new_question_review_session(conn, client, threshold, timing_mode)
     elif mode == "all":
         await _flash()
         await _long()
@@ -715,7 +703,6 @@ async def _run_review_mode(
         await _flash()
         await _long()
         await _topics()
-        await _new_q()
 
 
 @app.command()
@@ -726,12 +713,10 @@ def review(
         help="FSRS review: levels 3–6 (long answers), worst performers first."),
     topics_mode: bool = typer.Option(False, "--topics", "-t",
         help="Quest for each topic due for scheduled review."),
-    new_questions: bool = typer.Option(False, "--new-questions", "-n",
-        help="Generate fresh questions for struggling or stale topic+level pairs."),
     all_fsrs: bool = typer.Option(False, "--all", "-a",
         help="Run flash cards then long answers, skipping whichever has nothing due."),
     everything: bool = typer.Option(False, "--everything", "-e",
-        help="Run all four modes in sequence, skipping any with nothing due."),
+        help="Run all three modes in sequence, skipping any with nothing due."),
     timed: Optional[bool] = typer.Option(
         None, "--timed/--untimed", help="Override default timing."),
     limit: int = typer.Option(
@@ -750,15 +735,15 @@ def review(
 
     Run with no mode flag for an interactive selector showing live due-counts.
 
-    Modes: [bold]--flash-cards[/bold]  [bold]--long-answers[/bold]  [bold]--topics[/bold]  [bold]--new-questions[/bold]
-    Combos: [bold]--all[/bold] (flash+long)  [bold]--everything[/bold] (all four)"""
+    Modes: [bold]--flash-cards[/bold]  [bold]--long-answers[/bold]  [bold]--topics[/bold]
+    Combos: [bold]--all[/bold] (flash+long)  [bold]--everything[/bold] (all three)"""
     import asyncio
     from scathach.config import OnFailedReview
 
     _require_api_key()
 
     # Validate mutual exclusivity
-    active_flags = sum([flash_cards, long_answers, topics_mode, new_questions, all_fsrs, everything])
+    active_flags = sum([flash_cards, long_answers, topics_mode, all_fsrs, everything])
     if active_flags > 1:
         console.print("[red]Specify only one mode flag at a time.[/red]")
         raise typer.Exit(code=1)
@@ -801,7 +786,6 @@ def review(
                 "flash-cards" if flash_cards else
                 "long-answers" if long_answers else
                 "topics" if topics_mode else
-                "new-questions" if new_questions else
                 "all" if all_fsrs else
                 "everything"
             )
@@ -810,6 +794,33 @@ def review(
             mode, conn, _make_client(), queue, timing_mode,
             threshold, limit, hydra_enabled, on_failed, topic_id,
         ))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# topics
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="topics")
+def topics_cmd(
+    all_topics: bool = typer.Option(False, "--all", "-a", help="Show all topics regardless of status."),
+    retired: bool = typer.Option(False, "--retired", "-r", help="Show only retired topics."),
+) -> None:
+    """Display a detailed topics table.
+
+    By default shows only active topics.
+    Pass [bold]--all[/bold] to include retired topics, or [bold]--retired[/bold] to show only retired."""
+    if all_topics and retired:
+        console.print("[red]--all and --retired are mutually exclusive.[/red]")
+        raise typer.Exit(code=1)
+
+    status_filter = "all" if all_topics else ("retired" if retired else "active")
+    conn = open_db(settings.db_path)
+    try:
+        from scathach.cli.topics_ui import render_topics_table
+        render_topics_table(conn, status_filter=status_filter)
     finally:
         conn.close()
 
@@ -826,7 +837,7 @@ def stats(
         help="Per-level breakdown for a single topic.",
     ),
     only_topics: bool = typer.Option(
-        False, "--topics",
+        False, "--topics","-T",
         help="Show only the Topics table.",
     ),
     only_review: bool = typer.Option(
@@ -989,6 +1000,58 @@ def topic_delete(
         console.print(
             f"[green]Deleted topic '[bold]{name}[/bold]' ({n} root question(s) removed).[/green]"
         )
+    finally:
+        conn.close()
+
+
+@topic_app.command("retire")
+def topic_retire(
+    name: str = typer.Argument(..., help="Topic name to retire."),
+) -> None:
+    """Retire a topic from scheduled topic review.
+
+    The topic's questions remain in FSRS review queues and are unaffected.
+    Use [bold]topic unretire[/bold] to make it active again."""
+    conn = open_db(settings.db_path)
+    try:
+        t_obj = get_topic_by_name(conn, name)
+        if t_obj is None:
+            console.print(
+                f"[red]Topic '{name}' not found.[/red] "
+                "Run [bold]scathach topics[/bold] to see available topics."
+            )
+            raise typer.Exit(code=1)
+        if t_obj.status == "retired":
+            console.print(f"[yellow]Topic '[bold]{name}[/bold]' is already retired.[/yellow]")
+            return
+        set_topic_status(conn, t_obj.id, "retired")
+        console.print(
+            f"[green]Topic '[bold]{name}[/bold]' has been retired from scheduled topic review.[/green]\n"
+            "[dim]Its questions remain active in FSRS review queues.[/dim]"
+        )
+    finally:
+        conn.close()
+
+
+@topic_app.command("unretire")
+def topic_unretire(
+    name: str = typer.Argument(..., help="Topic name to reactivate."),
+) -> None:
+    """Reactivate a retired topic for scheduled topic review."""
+    conn = open_db(settings.db_path)
+    try:
+        t_obj = get_topic_by_name(conn, name)
+        if t_obj is None:
+            console.print(
+                f"[red]Topic '{name}' not found.[/red] "
+                "Run [bold]scathach topics --retired[/bold] to see retired topics."
+            )
+            raise typer.Exit(code=1)
+        if t_obj.status == "active":
+            console.print(f"[yellow]Topic '[bold]{name}[/bold]' is already active.[/yellow]")
+            return
+        set_topic_status(conn, t_obj.id, "active")
+        console.print(f"[green]Topic '[bold]{name}[/bold]' is now active.[/green]")
     finally:
         conn.close()
 

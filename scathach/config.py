@@ -60,7 +60,7 @@ class Settings(BaseSettings):
         description="Default timing mode for all sessions and reviews (timed or untimed).",
     )
     hydra_in_review: bool = Field(
-        default=False,
+        default=True,
         description="Whether the Hydra Protocol is enabled during long-answer and topic reviews.",
     )
     hydra_in_drill: bool = Field(

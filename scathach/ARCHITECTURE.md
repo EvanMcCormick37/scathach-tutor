@@ -11,13 +11,13 @@ scathach/
 ├── __init__.py             # Package metadata (version)
 ├── config.py               # Pydantic Settings singleton
 ├── cli/                    # Terminal UI (Typer + Rich + prompt_toolkit)
-│   ├── main.py             # Top-level command definitions + topic sub-group
+│   ├── main.py             # Top-level command definitions + topic/session sub-groups
 │   ├── session_ui.py       # Learning session TUI (timers, input, event rendering)
 │   ├── review_ui.py        # Review TUI (flash-cards & long-answers)
-│   ├── drill_ui.py         # Drill session UI (placeholder; drills run via SessionRunner)
+│   ├── drill_ui.py         # Placeholder; drills run via SessionRunner
 │   ├── topic_review_ui.py  # Topic-scheduled quest UI
-│   ├── new_question_review_ui.py  # Fresh-question review UI
-│   └── stats_ui.py         # Progress dashboard
+│   ├── topics_ui.py        # Detailed topics table (scathach topics)
+│   └── stats_ui.py         # Progress dashboard (scathach stats)
 ├── core/                   # Business logic (no I/O)
 │   ├── question.py         # Domain enums/types: DifficultyLevel, TimingMode, TimerZone
 │   ├── session.py          # SessionRunner state machine
@@ -25,14 +25,13 @@ scathach/
 │   ├── scheduler.py        # FSRS-based spaced repetition
 │   ├── scoring.py          # LLM answer evaluation + time-penalty logic
 │   ├── drill.py            # Drill question generation
-│   ├── topic_review.py     # Eligible-pair detection + single-question generation
 │   └── topic_support.py    # Topic-level exam/practice support + next_review_at finalization
 ├── db/                     # SQLite persistence
 │   ├── schema.py           # DDL, versioning, connection management
 │   ├── models.py           # Dataclasses: Topic, Question, Attempt, SessionRecord, ReviewEntry
 │   └── repository.py       # CRUD operations for all entities
 ├── ingestion/              # Document ingestion pipeline
-│   ├── ingestor.py         # File/URL/paste → markdown → Topic
+│   ├── ingestor.py         # File/URL → markdown → Topic
 │   └── chunker.py          # MVP stub (future RAG/chunking)
 └── llm/                    # LLM interaction layer
     ├── client.py           # Async OpenAI-compatible wrapper (retry/backoff)
@@ -48,13 +47,13 @@ scathach/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        CLI  (Typer / Rich)                          │
-│  main.py · session_ui.py · review_ui.py · drill_ui.py · stats_ui.py│
+│  main.py · session_ui.py · review_ui.py · topics_ui.py · stats_ui.py│
 └──────────┬──────────────────────────────────────────────────────────┘
            │  callbacks / events
 ┌──────────▼──────────────────────────────────────────────────────────┐
 │                      CORE  (pure business logic)                    │
 │  session.py · scoring.py · hydra.py · scheduler.py · question.py   │
-│  drill.py · topic_review.py · topic_support.py                     │
+│  drill.py · topic_support.py                                        │
 └────┬─────────────┬────────────────────────────────────┬────────────┘
      │             │                                    │
 ┌────▼────┐  ┌─────▼──────┐                   ┌────────▼────────┐
@@ -82,9 +81,8 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 
 | Command | Purpose |
 |---------|---------|
-| `ingest [srcpath] [name]` | Ingest a file or URL with an optional topic name; omit both to scan `~/.scathach/docs/`; shows updated topics table on success |
-| `session quest <topic>` | Start an adaptive quest (Hydra, levels 1–4 by default); opens source doc by default |
-| `session quest <topic> --exam` | Closed-book quest; source doc not opened; updates exam support |
+| `ingest [srcpath] [name]` | Ingest a file or URL with an optional topic name; omit both to scan `~/.scathach/docs/`; shows updated stats on success |
+| `session quest <topic>` | Start an adaptive quest (Hydra, levels 1–4 by default); opens source doc; use `--exam` for closed-book |
 | `session drill <topic> --level N` | Fixed-level quiz; stored in sessions table, resumable |
 | `session list` | List all unfinished sessions |
 | `session resume <id>` | Resume an interrupted session |
@@ -92,11 +90,13 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 | `review` | Interactive review mode selector (shows live due-counts) |
 | `review --flash-cards` | FSRS review: levels 1–2 |
 | `review --long-answers` | FSRS review: levels 3–6, worst performers first |
-| `review --topics` | Quest for each topic due for scheduled review |
-| `review --new-questions` | Fresh questions for struggling/stale topic+level pairs |
+| `review --topics` | Quest for each active topic due for scheduled review |
 | `review --all` | Flash-cards then long-answers, skipping if nothing due |
-| `review --everything` | All four review modes in sequence, skipping empty modes |
-| `stats` | Progress dashboard (topics, queues, score distribution) |
+| `review --everything` | All three review modes in sequence, skipping empty modes |
+| `topics` | Detailed topics table (active only by default) |
+| `topics --all` | All topics regardless of status |
+| `topics --retired` | Retired topics only |
+| `stats` | Progress dashboard (active topics, queues, score distribution) |
 | `stats --topic <name>` | Per-level breakdown for a single topic |
 | `config --show` | Print current configuration |
 | `config --set-model` | Change the active LLM model |
@@ -110,6 +110,8 @@ Running `scathach` with no arguments prints the banner and renders the stats das
 | `topic rename <old> <new>` | Rename a topic |
 | `topic delete <name>` | Permanently delete a topic and all its data |
 | `topic set-level <name> <level>` | Set the target difficulty level for topic review quests |
+| `topic retire <name>` | Retire a topic from scheduled review; questions remain in FSRS queues |
+| `topic unretire <name>` | Reactivate a retired topic |
 
 #### `session quest` flags
 
@@ -155,7 +157,8 @@ Drives the interactive learning session in the terminal.
   - **NORMAL** (0 – t): green, full score.
   - **PENALTY** (t – 2t): yellow, score halved on submit.
   - **EXPIRED** (>2t): red, auto-fail.
-- **Answer collectors** — `_get_answer_untimed()` and `_get_answer_timed()` both use prompt_toolkit for multiline input. The timed variant runs the timer bar concurrently and kills input on expiry.
+- **Answer collectors** — `_get_answer_untimed()` and `_get_answer_timed()` both use prompt_toolkit for multiline input. The timed variant runs the timer bar concurrently and kills input on expiry. Both accept an optional `source_path` that activates the `Ctrl+O` binding.
+- **`make_answer_provider(timing, source_path=None)`** — Factory function. Returns the appropriate answer coroutine for the given timing mode, with `source_path` baked in. Exam mode always passes `source_path=None`.
 
 #### External editor (`Ctrl+E`)
 
@@ -171,25 +174,39 @@ VS Code users should set `VISUAL="code --wait"` so the process blocks until the 
 
 The timer is **not** paused when the editor is open in timed mode — time continues to run.
 
+#### Source document opener (`Ctrl+O`)
+
+When a `source_path` is available (i.e. not in exam mode), both answer collectors also register `Ctrl+O`. When pressed, the source document is opened with the system default application (`os.startfile` on Windows, `open` on macOS, `xdg-open` on Linux) without interrupting input. URL sources open in the default browser. The binding is silently absent when `source_path=None` (exam mode or no source on record).
+
 ---
 
 ### `review_ui.py`
 
-- **`run_review_session()`** — Levels 1–2 FSRS review. Accepts an optional `topic_id` to restrict to one topic. On failure, behaviour is controlled by `SCATHACH_ON_FAILED_REVIEW`.
-- **`run_super_review_session()`** — Levels 3–6, worst-score-first per difficulty tier, optional Hydra. Accepts `topic_id` filter.
+- **`run_review_session()`** — Levels 1–2 FSRS review. Accepts optional `topic_id` (filter to one topic) and `source_path` (enables `Ctrl+O`). For multi-topic sessions the source path is resolved per-question via a pre-loaded topic map. On failure, behaviour is controlled by `SCATHACH_ON_FAILED_REVIEW`.
+- **`run_super_review_session()`** — Levels 3–6, worst-score-first per difficulty tier, optional Hydra. Same `topic_id` and `source_path` parameters.
 - **`_show_result()`** — Renders score, diagnosis, and ideal answer after every question. Ideal answer is always displayed (green panel on pass, yellow on fail).
 
 ---
 
 ### `drill_ui.py`
 
-Runs a flat quiz of freshly generated questions at a single difficulty level. Uses a mutable `queue_list` so Hydra sub-questions can be inserted mid-session. Hydra is enabled by default (`SCATHACH_HYDRA_IN_DRILL=true`).
+Placeholder. Drill sessions now run through `SessionRunner` with `session_type="drill"`, stored and resumed identically to quests.
+
+---
+
+### `topics_ui.py`
+
+Renders the detailed topics table used by `scathach topics`.
+
+- **`render_topics_table(conn, status_filter="active")`** — Fetches data via `get_topics_stats()` and renders a Rich table with columns: ID, Name, Questions, Avg Difficulty, Avg Score, Exam Support, Practice Support, Target Level, Next Review. Status column is included only when showing all or retired topics. Next Review is formatted as `M/D/YY` (no leading zeros, two-digit year).
 
 ---
 
 ### `stats_ui.py`
 
-Renders three Rich tables: topic inventory (ID, name, question count, avg difficulty, avg score, source, created), review queue health (total / due now / due this week, filtered to `state = 'review'`), and score distribution by difficulty.
+Renders three Rich tables: topic inventory (active topics only — ID, name, question count, avg difficulty, avg score), review queue health (total / due now / due this week for active topics, filtered to `state = 'review'`), and score distribution by difficulty (opt-in via `--levels`).
+
+Uses `get_topics_stats(conn, status_filter="active")` from `repository.py` — the raw query is not duplicated here.
 
 `render_topic_stats()` renders a per-level breakdown for a single topic including FSRS queue state.
 
@@ -285,7 +302,9 @@ Simplified FSRS using stability as the core parameter:
 | 7–8 | review | 2.5× | — |
 | 9–10 | review | 3.5× | — |
 
-- **`update_schedule(conn, question_id, score, queue)`** — Computes new stability, interval, and next review timestamp, then upserts into the appropriate queue table.
+**Initial stability** — When a question enters a queue for the first time, stability is seeded from the question's difficulty level (`float(difficulty)`). A level-4 question starts at stability 4.0 rather than 1.0, giving harder questions proportionally longer initial intervals after their first pass.
+
+- **`update_schedule(conn, question_id, score, queue, difficulty=1)`** — Computes new stability, interval, and next review timestamp, then upserts into the appropriate queue table. `difficulty` is used only when no existing entry is found (first-time scheduling).
 - **`get_scheduled_questions(conn, queue, ...)`** — Returns questions where `next_review_at <= now` (or `NULL` for never-seen). The `worst_first` flag sorts by `last_score ASC` within each difficulty tier, surfacing problem areas first. Accepts an optional `topic_id` to filter to a single topic.
 
 Two queues (`timed_review_queue`, `untimed_review_queue`) track the same question independently — a question can have different FSRS state depending on whether it was answered under time pressure.
@@ -304,14 +323,16 @@ Opens a SQLite connection, sets `PRAGMA journal_mode=WAL` and `PRAGMA foreign_ke
 
 | Table | Key columns |
 |-------|------------|
-| `topics` | `id`, `name` (UNIQUE), `source_path`, `content`, `exam_support`, `practice_support`, `next_review_at`, `target_level`, `created_at` |
-| `questions` | `id`, `topic_id` (FK), `parent_id` (FK self — Hydra hierarchy), `difficulty` (1–6), `body`, `ideal_answer`, `is_root` |
+| `topics` | `id`, `name` (UNIQUE), `source_path`, `content`, `status` (active/retired), `exam_support`, `practice_support`, `next_review_at`, `target_level`, `created_at` |
+| `questions` | `id`, `topic_id` (FK), `parent_id` (FK self — Hydra hierarchy), `session_id` (FK), `difficulty` (1–6), `body`, `ideal_answer`, `is_root` |
 | `attempts` | `id`, `question_id` (FK), `session_id`, `answer_text`, `raw_score`, `final_score`, `time_taken_s`, `time_penalty`, `timed`, `passed` |
 | `sessions` | `id`, `topic_id` (FK), `status` (active/complete), `session_type` (quest/drill), `timing`, `threshold`, `num_levels`, `is_exam`, `drill_level`, `question_stack` (JSON), `cleared_ids` (JSON), `root_ids` (JSON) |
 | `timed_review_queue` | `question_id` (PK/FK), `last_score`, `next_review_at`, `stability`, `difficulty_fsrs`, `state` (new/learning/review/relearning) |
 | `untimed_review_queue` | (same structure as timed) |
 
-Questions form a tree: root questions have `parent_id = NULL` and `is_root = TRUE`; Hydra sub-questions have `parent_id` pointing to their parent question.
+Questions form a tree: root questions have `parent_id = NULL` and `is_root = TRUE`; Hydra sub-questions have `parent_id` pointing to their parent question. Every question carries a `session_id` referencing the session that generated it.
+
+**Topic status** — `status = 'active'` (default) means the topic participates in scheduled topic-review quests. `status = 'retired'` excludes it from `get_due_topics()` and the stats dashboard, but all its questions remain in the FSRS review queues and continue to be scheduled normally.
 
 ### `repository.py`
 
@@ -319,6 +340,9 @@ All DB access goes through typed functions in this module. No SQL appears elsewh
 
 Key operations:
 - `upsert_topic()` / `delete_topic()` — insert-or-update or permanently delete a topic (cascades to all questions, attempts, review entries, and sessions).
+- `set_topic_status(conn, topic_id, status)` — sets `'active'` or `'retired'`; does not touch questions or FSRS entries.
+- `get_topics_stats(conn, status_filter="active")` — returns aggregate topic stats (question count, avg difficulty, avg score, all topic metadata) with optional status filtering (`'active'` / `'retired'` / `None` for all). Shared by `stats_ui` and `topics_ui`.
+- `get_due_topics(conn, now)` — returns active topics only (`status = 'active'`).
 - `insert_question()` / `get_children()` / `delete_question()` (cascades to attempts + review entries via recursive CTE).
 - `record_attempt()` / `get_latest_attempt()`.
 - `upsert_review_entry()` / `get_due_questions()` — `get_due_questions` accepts `topic_id` to restrict results to a single topic.
@@ -465,5 +489,11 @@ Runtime changes (`--set-model`, `--set-timing`) write to `~/.scathach/.env` via 
 **Hydra retry enforced** — The parent question is always retried after its Hydra sub-tree is cleared. This is the intended learning design: sub-questions build the understanding needed to answer the parent, and the parent must be answered correctly to clear it.
 
 **$EDITOR for rich input** — `Ctrl+E` in any answer collector opens a `.md` temp file in the user's configured editor (`$VISUAL` → `$EDITOR` → system fallback), enabling LaTeX, Markdown, and any editor-specific tooling for complex answers. The file is cleaned up after reading. In timed mode the clock continues to run.
+
+**Source document at a keypress** — `Ctrl+O` opens the source document without leaving the answer prompt. It is registered only when a non-null `source_path` is threaded through to the answer collector. Exam mode always passes `source_path=None`, keeping the binding absent and preserving closed-book integrity without any special-case logic.
+
+**Topic retirement** — Topics can be retired (`topic retire`) to remove them from scheduled topic-review quests without deleting any data. Their questions stay in FSRS queues and keep accumulating review history. The stats dashboard and due-topic counts only reflect active topics. Retirement is reversible (`topic unretire`).
+
+**Initial FSRS stability from difficulty** — New questions seed their review queue entry with `stability = float(difficulty)` rather than a flat 1.0. A level-4 question naturally has a longer initial review interval than a level-1 flash card, matching the intuition that harder questions require more processing time before they need re-testing.
 
 **Prompt version-pinning** — Every prompt template carries a version string. Changing prompt wording bumps the version so that downstream parsing and evaluation tests know to re-verify outputs.

@@ -57,6 +57,7 @@ async def run_review_session(
     limit: int = 20,
     on_failed: OnFailedReview = OnFailedReview.CHOOSE,
     topic_id: Optional[int] = None,
+    source_path: Optional[str] = None,
 ) -> None:
     """
     Run a standard review session (difficulty 1–2).
@@ -90,6 +91,12 @@ async def run_review_session(
     session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
+    # Pre-load source paths for all topics (used by Ctrl+O in answer prompt)
+    _sp: dict[int, Optional[str]] = {
+        r["id"]: r["source_path"]
+        for r in conn.execute("SELECT id, source_path FROM topics").fetchall()
+    }
+
     queue_list = list(questions)
     i = 0
 
@@ -105,7 +112,7 @@ async def run_review_session(
         ))
 
         try:
-            answer_text, time_taken_s = await _collect_answer(question, timing)
+            answer_text, time_taken_s = await _collect_answer(question, timing, source_path=_sp.get(question.topic_id))
         except TossQuestion:
             delete_question(conn, question.id)
             console.print("[dim]Question tossed and permanently deleted.[/dim]")
@@ -126,7 +133,7 @@ async def run_review_session(
 
         attempt = record_attempt(conn, attempt)
         all_attempts.append(attempt)
-        update_schedule(conn, question.id, attempt.final_score, queue)
+        update_schedule(conn, question.id, attempt.final_score, queue, difficulty=question.difficulty)
         _show_result(attempt, diagnosis, question.ideal_answer)
 
         if not attempt.passed and _should_repeat(on_failed):
@@ -148,9 +155,10 @@ async def run_super_review_session(
     timing: TimingMode,
     threshold: int,
     limit: int = 10,
-    hydra_enabled: bool = False,
+    hydra_enabled: bool = True,
     on_failed: OnFailedReview = OnFailedReview.CHOOSE,
     topic_id: Optional[int] = None,
+    source_path: Optional[str] = None,
 ) -> None:
     """
     Run a super-review session (difficulty 3–6).
@@ -186,6 +194,12 @@ async def run_super_review_session(
     session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
+    # Pre-load source paths for all topics (used by Ctrl+O in answer prompt)
+    _sp: dict[int, Optional[str]] = {
+        r["id"]: r["source_path"]
+        for r in conn.execute("SELECT id, source_path FROM topics").fetchall()
+    }
+
     # Use a list so Hydra sub-questions can be appended mid-session
     queue_list = list(questions)
     i = 0
@@ -207,7 +221,7 @@ async def run_super_review_session(
         ))
 
         try:
-            answer_text, time_taken_s = await _collect_answer(question, timing)
+            answer_text, time_taken_s = await _collect_answer(question, timing, source_path=_sp.get(question.topic_id))
         except TossQuestion:
             delete_question(conn, question.id)
             console.print("[dim]Question tossed and permanently deleted.[/dim]")
@@ -228,7 +242,7 @@ async def run_super_review_session(
 
         attempt = record_attempt(conn, attempt)
         all_attempts.append(attempt)
-        update_schedule(conn, question.id, attempt.final_score, queue)
+        update_schedule(conn, question.id, attempt.final_score, queue, difficulty=question.difficulty)
         _show_result(attempt, diagnosis, question.ideal_answer)
 
         # Hydra spawning on failure (only if enabled)
@@ -262,10 +276,10 @@ async def run_super_review_session(
 # ---------------------------------------------------------------------------
 
 
-async def _collect_answer(question: Question, timing: TimingMode) -> tuple[str, Optional[float]]:
+async def _collect_answer(question: Question, timing: TimingMode, source_path: Optional[str] = None) -> tuple[str, Optional[float]]:
     if timing == TimingMode.TIMED:
-        return await _get_answer_timed(question, allow_toss=True)
-    return await _get_answer_untimed(question, allow_toss=True)
+        return await _get_answer_timed(question, allow_toss=True, source_path=source_path)
+    return await _get_answer_untimed(question, allow_toss=True, source_path=source_path)
 
 
 def _show_result(attempt: Attempt, diagnosis: str, ideal_answer: str) -> None:

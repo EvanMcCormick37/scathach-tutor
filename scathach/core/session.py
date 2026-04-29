@@ -483,6 +483,7 @@ class SessionRunner:
                             question_id=question.id,
                             queue=queue_name,
                             last_score=attempt.final_score,
+                            stability=float(question.difficulty),
                             state="learning",
                         ))
                 else:

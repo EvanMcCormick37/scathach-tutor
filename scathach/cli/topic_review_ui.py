@@ -96,7 +96,7 @@ async def run_topic_review(
             conn=conn,
             client=client,
             config=config,
-            answer_provider=make_answer_provider(timing),
+            answer_provider=make_answer_provider(timing, source_path=topic.source_path),
             event_handler=handle_event,
         )
         await runner.run()

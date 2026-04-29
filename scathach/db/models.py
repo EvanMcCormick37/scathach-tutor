@@ -17,6 +17,7 @@ class Topic:
     source_path: Optional[str] = None
     id: Optional[int] = None
     created_at: Optional[datetime] = None
+    status: str = "active"             # 'active' | 'retired'
     exam_support: float = 1.0          # stability updated by closed-book (--exam) sessions
     practice_support: float = 0.0      # accumulator updated by open-book sessions
     next_review_at: Optional[str] = None  # ISO datetime; NULL = never reviewed; only set on topic-review completion

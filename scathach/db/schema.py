@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 # DDL executed in order — every statement is idempotent via CREATE TABLE IF NOT EXISTS
 SCHEMA_DDL = """
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS topics (
     name             TEXT NOT NULL UNIQUE,
     source_path      TEXT,
     content          TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'active',
     exam_support     REAL NOT NULL DEFAULT 1.0,
     practice_support REAL NOT NULL DEFAULT 0.0,
     next_review_at   TEXT,
@@ -130,6 +131,9 @@ _MIGRATIONS: dict[int, list[str]] = {
     ],
     5: [
         "ALTER TABLE questions ADD COLUMN session_id TEXT REFERENCES sessions(id)",
+    ],
+    6: [
+        "ALTER TABLE topics ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
     ],
 }
 

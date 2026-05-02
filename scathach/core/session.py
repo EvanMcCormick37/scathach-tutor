@@ -131,6 +131,7 @@ class QuestionPresented(SessionEvent):
     index: int        # 1-based position in current queue
     total: int        # size of current queue
     depth: int        # 0 = root, 1 = first Hydra level, etc.
+    is_retry: bool = False  # True when parent is being re-asked after Hydra sub-tree cleared
 
 
 @dataclass
@@ -403,6 +404,12 @@ class SessionRunner:
                     q_index = seen_ids.index(question.id) + 1
                     q_total = orig_size
 
+                # --- Determine effective timing for this attempt ---
+                # Only time if: session is timed, question is not a Hydra sub-question,
+                # and the question has never been attempted before in this session.
+                is_hydra = question.parent_id is not None
+                has_prior_attempt = get_latest_attempt(self.conn, question.id) is not None
+
                 # --- Present question ---
                 self.state = SessionState.QUESTION_PRESENTED
                 await self.event_handler(QuestionPresented(
@@ -410,13 +417,8 @@ class SessionRunner:
                     index=q_index,
                     total=q_total,
                     depth=depth,
+                    is_retry=has_prior_attempt,
                 ))
-
-                # --- Determine effective timing for this attempt ---
-                # Only time if: session is timed, question is not a Hydra sub-question,
-                # and the question has never been attempted before in this session.
-                is_hydra = question.parent_id is not None
-                has_prior_attempt = get_latest_attempt(self.conn, question.id) is not None
                 effective_timed = (
                     self.config.timing == TimingMode.TIMED
                     and not is_hydra

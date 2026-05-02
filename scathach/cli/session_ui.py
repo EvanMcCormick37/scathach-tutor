@@ -4,7 +4,7 @@ Terminal UI for interactive learning sessions.
 Provides:
 - Pre-session configuration wizard
 - DualZoneTimer: rich progress bar with penalty zone
-- Answer input via prompt_toolkit multiline editor
+- Answer input via prompt_toolkit TextArea (arrow-key navigation, Ctrl+S to submit)
 - Event handler rendering all SessionRunner events
 """
 
@@ -21,15 +21,17 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from prompt_toolkit import PromptSession
+from prompt_toolkit import Application
 from prompt_toolkit.application import run_in_terminal
-from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -54,6 +56,8 @@ console = Console()
 
 # Active spinner task — started during long LLM calls, cancelled when done.
 _spinner_task: Optional[asyncio.Task] = None
+
+_BAR_WIDTH = 40
 
 
 async def _run_spinner(message: str) -> None:
@@ -163,8 +167,8 @@ def _open_in_editor(current_text: str) -> str:
     Editor resolution order:
       $VISUAL → $EDITOR → notepad (Windows) / nano (Unix/macOS)
 
-    VS Code users should set VISUAL="code --wait" (or EDITOR="code --wait")
-    so that the process blocks until the window is closed.
+    VS Code users should set VISUAL="code --wait" so the process blocks until
+    the window is closed.
     """
     editor_cmd = (
         os.environ.get("VISUAL")
@@ -190,17 +194,15 @@ def _open_in_editor(current_text: str) -> str:
             pass
 
 
-def _add_editor_binding(kb: KeyBindings) -> None:
-    """Register Ctrl+E on `kb` to open the current buffer in $EDITOR."""
+def _add_editor_binding(kb: KeyBindings, text_area: TextArea) -> None:
+    """Register Ctrl+E on `kb` to open the current TextArea content in $EDITOR."""
     @kb.add("c-e")
     def open_editor(event):  # type: ignore[no-untyped-def]
-        current_text = event.current_buffer.text
+        current = text_area.text
 
         def _launch() -> None:
-            new_text = _open_in_editor(current_text)
-            event.current_buffer.set_document(
-                Document(new_text.rstrip("\n"), cursor_position=len(new_text.rstrip("\n")))
-            )
+            new_text = _open_in_editor(current)
+            text_area.text = new_text.rstrip("\n")
 
         run_in_terminal(_launch)
 
@@ -238,6 +240,75 @@ def _add_doc_binding(kb: KeyBindings, source_path: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Visual line navigation
+# ---------------------------------------------------------------------------
+
+
+def _visual_layout(text: str, width: int) -> list[int]:
+    """
+    Return the start absolute position of each visual row.
+
+    prompt_toolkit's default up/down only moves across logical lines (newlines).
+    This function computes wrap points so we can override that behaviour.
+    """
+    rows = [0]
+    col = 0
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            rows.append(i + 1)
+            col = 0
+        else:
+            col += 1
+            if col >= width and i + 1 < len(text):
+                rows.append(i + 1)
+                col = 0
+    return rows
+
+
+def _move_cursor_visual(text: str, cursor_pos: int, width: int, direction: int) -> int:
+    """Move cursor up (direction=-1) or down (+1) by one visual line."""
+    rows = _visual_layout(text, width)
+    n = len(rows)
+
+    cur_row = 0
+    for i in range(n - 1, -1, -1):
+        if rows[i] <= cursor_pos:
+            cur_row = i
+            break
+
+    col = cursor_pos - rows[cur_row]
+    target_row = cur_row + direction
+
+    if target_row < 0 or target_row >= n:
+        return cursor_pos
+
+    tstart = rows[target_row]
+    tend = rows[target_row + 1] if target_row + 1 < n else len(text) + 1
+    return tstart + min(col, max(0, tend - tstart - 1))
+
+
+def _add_visual_navigation(kb: KeyBindings) -> None:
+    """
+    Override up/down arrows to navigate visual (wrap-aware) lines.
+
+    eager=True ensures these fire before prompt_toolkit's built-in emacs
+    bindings, which only navigate logical (newline-delimited) lines.
+    """
+    @kb.add("up", eager=True)
+    def _up(event):  # type: ignore[no-untyped-def]
+        buff = event.current_buffer
+        # Subtract 1 for the scrollbar column.
+        width = max(1, event.app.output.get_size().columns - 1)
+        buff.cursor_position = _move_cursor_visual(buff.text, buff.cursor_position, width, -1)
+
+    @kb.add("down", eager=True)
+    def _down(event):  # type: ignore[no-untyped-def]
+        buff = event.current_buffer
+        width = max(1, event.app.output.get_size().columns - 1)
+        buff.cursor_position = _move_cursor_visual(buff.text, buff.cursor_position, width, 1)
+
+
+# ---------------------------------------------------------------------------
 # Answer input
 # ---------------------------------------------------------------------------
 
@@ -245,36 +316,45 @@ def _add_doc_binding(kb: KeyBindings, source_path: Optional[str]) -> None:
 async def _get_answer_untimed(
     question: Question, allow_toss: bool = False, source_path: Optional[str] = None
 ) -> tuple[str, Optional[float]]:
-    """Collect a multiline answer without a timer. Escape+Enter to submit."""
+    """Collect a multiline answer without a timer. Ctrl+S to submit."""
     kb = KeyBindings()
-    toss_flag = [False]
+    text_area = TextArea(
+        multiline=True,
+        wrap_lines=True,
+        scrollbar=True,
+        height=8,
+        focus_on_click=True,
+    )
 
-    @kb.add("escape", "enter")
-    def submit(event):  # type: ignore[no-untyped-def]
-        event.current_buffer.validate_and_handle()
+    @kb.add("c-s")
+    def _submit(event):  # type: ignore[no-untyped-def]
+        event.app.exit(result=text_area.text)
 
     if allow_toss:
         @kb.add("c-t")
-        def toss(event):  # type: ignore[no-untyped-def]
-            toss_flag[0] = True
-            event.current_buffer.validate_and_handle()
+        def _toss(event):  # type: ignore[no-untyped-def]
+            event.app.exit(exception=TossQuestion())
 
-    _add_editor_binding(kb)
+    _add_visual_navigation(kb)
+    _add_editor_binding(kb, text_area)
     _add_doc_binding(kb, source_path)
 
-    session: PromptSession = PromptSession(key_bindings=kb)
-    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
+    hints = ["[bold]Ctrl+S[/bold] submit", "[bold]Ctrl+E[/bold] editor"]
     if source_path:
-        hint += ", [bold]Ctrl+O[/bold] to open doc"
+        hints.append("[bold]Ctrl+O[/bold] open doc")
     if allow_toss:
-        hint += ", [bold]Ctrl+T[/bold] to toss"
-    console.print(hint + ".[/dim]")
-    answer = await session.prompt_async("> ", multiline=True)
+        hints.append("[bold]Ctrl+T[/bold] toss")
+    console.print("[dim]" + "  ·  ".join(hints) + "[/dim]")
 
-    if toss_flag[0]:
-        raise TossQuestion()
+    app = Application(
+        layout=Layout(text_area),
+        key_bindings=kb,
+        full_screen=False,
+        mouse_support=False,
+    )
+    answer = await app.run_async()
+    return (answer or "").strip(), None
 
-    return answer.strip(), None
 
 async def _get_answer_timed(
     question: Question, allow_toss: bool = False, source_path: Optional[str] = None
@@ -282,38 +362,34 @@ async def _get_answer_timed(
     """Collect an answer under the dual-zone timer."""
     dl = DifficultyLevel.from_int(question.difficulty)
     timer = DualZoneTimer(dl.time_limit_s)
-    timer.start()
-    toss_flag = [False]
-
-    hint = "[dim]Type your answer. [bold]Escape+Enter[/bold] to submit, [bold]Ctrl+E[/bold] for $EDITOR"
-    if source_path:
-        hint += ", [bold]Ctrl+O[/bold] to open doc"
-    if allow_toss:
-        hint += ", [bold]Ctrl+T[/bold] to toss"
-    console.print(hint + f". Time limit: {dl.time_limit_s}s[/dim]")
 
     kb = KeyBindings()
+    text_area = TextArea(
+        multiline=True,
+        wrap_lines=True,
+        scrollbar=True,
+        height=8,
+        focus_on_click=True,
+    )
 
-    @kb.add("escape", "enter")
-    def submit(event):  # type: ignore[no-untyped-def]
-        event.current_buffer.validate_and_handle()
+    expired = [False]
+
+    @kb.add("c-s")
+    def _submit(event):  # type: ignore[no-untyped-def]
+        event.app.exit(result=text_area.text)
 
     if allow_toss:
         @kb.add("c-t")
-        def toss(event):  # type: ignore[no-untyped-def]
-            toss_flag[0] = True
-            event.current_buffer.validate_and_handle()
+        def _toss(event):  # type: ignore[no-untyped-def]
+            event.app.exit(exception=TossQuestion())
 
-    _add_editor_binding(kb)
+    _add_visual_navigation(kb)
+    _add_editor_binding(kb, text_area)
     _add_doc_binding(kb, source_path)
-    
-    _BAR_WIDTH = 30
 
-    def get_bottom_toolbar():
-        """Dynamic toolbar evaluated every refresh_interval."""
+    def get_toolbar_text() -> HTML:
         e = timer.elapsed()
         zone = timer.zone()
-
         if zone == TimerZone.NORMAL:
             fraction = max(0.0, (dl.time_limit_s - e) / dl.time_limit_s)
             filled = round(fraction * _BAR_WIDTH)
@@ -325,47 +401,61 @@ async def _get_answer_timed(
             filled = round(fraction * _BAR_WIDTH)
             bar = f'<ansiyellow>{"█" * filled}</ansiyellow>{"░" * (_BAR_WIDTH - filled)}'
             remaining = max(0.0, dl.time_limit_s * 2 - e)
-            return HTML(f'{bar}  <ansiyellow><b>⚠ Over time — score halved. {remaining:.0f}s before auto-fail</b></ansiyellow>')
+            return HTML(
+                f'{bar}  <ansiyellow><b>⚠ Over time — score halved. '
+                f'{remaining:.0f}s before auto-fail</b></ansiyellow>'
+            )
         else:
             bar = "░" * _BAR_WIDTH
             return HTML(f'<ansired>{bar}  ⏰ Time expired — auto-fail</ansired>')
-    
-    # refresh_interval ensures the toolbar updates twice a second,
-    # even if the user isn't actively typing.
-    session: PromptSession = PromptSession(
-        key_bindings=kb,
-        bottom_toolbar=get_bottom_toolbar,
-        refresh_interval=0.5
+
+    toolbar = Window(
+        height=1,
+        content=FormattedTextControl(get_toolbar_text),
+        dont_extend_height=True,
     )
 
-    # Wrap the prompt in a task so we can forcefully close it if time expires
-    prompt_task = asyncio.create_task(session.prompt_async("> ", multiline=True))
+    hints = ["[bold]Ctrl+S[/bold] submit", "[bold]Ctrl+E[/bold] editor", f"Time limit: {dl.time_limit_s}s"]
+    if source_path:
+        hints.append("[bold]Ctrl+O[/bold] open doc")
+    if allow_toss:
+        hints.append("[bold]Ctrl+T[/bold] toss")
+    console.print("[dim]" + "  ·  ".join(hints) + "[/dim]")
 
-    async def enforce_timeout() -> None:
-        while not timer.is_expired():
-            if prompt_task.done():
-                return
+    app = Application(
+        layout=Layout(HSplit([text_area, toolbar])),
+        key_bindings=kb,
+        full_screen=False,
+        mouse_support=False,
+    )
+
+    timer.start()
+
+    async def timer_watcher() -> None:
+        while True:
             await asyncio.sleep(0.5)
-        
-        # If timer expires and the user hasn't submitted, kill the prompt
-        if not prompt_task.done():
-            prompt_task.cancel()
+            app.invalidate()
+            if timer.is_expired():
+                expired[0] = True
+                app.exit(result=text_area.text)
+                return
 
-    timeout_task = asyncio.create_task(enforce_timeout())
-
+    watcher_task = asyncio.create_task(timer_watcher())
     try:
-        answer = await prompt_task
-    except asyncio.CancelledError:
-        # Re-caught from prompt_task.cancel()
-        answer = ""
-        console.print("\n[red bold]⏰ Time expired! Input closed.[/red bold]")
+        answer = await app.run_async()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
 
     elapsed = timer.elapsed()
 
-    if toss_flag[0]:
-        raise TossQuestion()
+    if expired[0]:
+        console.print("\n[red bold]⏰ Time expired! Input closed.[/red bold]")
 
-    return answer.strip(), elapsed
+    return (answer or "").strip(), elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +541,9 @@ def _render_question(event: QuestionPresented) -> None:
     if event.depth > 0:
         prefix = f"[Hydra Depth {event.depth}] Question {event.index}/{event.total}"
         border = "magenta"
+    elif event.is_retry:
+        prefix = f"[RETRY] Question {event.index}/{event.total}"
+        border = "magenta"
     else:
         prefix = f"Question {event.index}/{event.total}"
         border = "cyan"
@@ -473,8 +566,6 @@ def _render_scored(event: AnswerScored) -> None:
         score_line = (
             f"[yellow]Raw: {raw}/10 → Final: {final}/10 [½ time penalty][/yellow]"
         )
-    elif not a.timed or a.time_taken_s is None:
-        score_line = _colorize_score(final)
     else:
         score_line = _colorize_score(final)
 

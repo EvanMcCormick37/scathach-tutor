@@ -157,7 +157,6 @@ Quick start:
   [bold]scathach session list[/bold]                    List unfinished sessions
   [bold]scathach review[/bold]                          Interactive review mode selector
   [bold]scathach review --flash-cards[/bold]            Level 1–2 FSRS review
-  [bold]scathach review --long-answers[/bold]           Level 3–6 FSRS review
   [bold]scathach review --topics[/bold]                 Quest for each due topic
   [bold]scathach stats[/bold]                           Progress dashboard
 
@@ -604,9 +603,6 @@ def _interactive_review_selector(
     flash_count = len(get_scheduled_questions(
         conn, queue, limit=999, now=now, min_difficulty=1, max_difficulty=2,
     ))
-    long_count = len(get_scheduled_questions(
-        conn, queue, limit=999, now=now, min_difficulty=3, max_difficulty=6,
-    ))
     topics_due = len(get_due_topics(conn, now))
 
     def _count(n: int, label: str = "due") -> str:
@@ -617,26 +613,22 @@ def _interactive_review_selector(
         "\n".join([
             "  What would you like to review?\n",
             f"  [[bold]f[/bold]]  Flash cards  — {_count(flash_count)}  (levels 1–2)",
-            f"  [[bold]l[/bold]]  Long answers — {_count(long_count)}  (levels 3–6)",
             f"  [[bold]t[/bold]]  Topics       — {_count(topics_due, 'due')}",
-            "  [[bold]a[/bold]]  All          — flash cards + long answers",
-            "  [[bold]e[/bold]]  Everything   — all three modes",
+            "  [[bold]e[/bold]]  Everything   — flash cards + topics",
             "  [[bold]q[/bold]]  Quit",
         ]),
         title="Review",
         border_style="cyan",
     ))
 
-    if flash_count + long_count + topics_due == 0:
+    if flash_count + topics_due == 0:
         console.print("[green]Nothing due across all modes. Great work![/green]")
         return None
 
-    choice = console.input("  Choice [f/l/t/a/e/q]: ").strip().lower()
+    choice = console.input("  Choice [f/t/e/q]: ").strip().lower()
     return {
         "f": "flash-cards",
-        "l": "long-answers",
         "t": "topics",
-        "a": "all",
         "e": "everything",
         "q": None,
     }.get(choice)
@@ -654,7 +646,7 @@ async def _run_review_mode(
     on_failed,
     topic_id: Optional[int],
 ) -> None:
-    from scathach.cli.review_ui import run_review_session, run_super_review_session
+    from scathach.cli.review_ui import run_review_session
     from scathach.core.scheduler import get_scheduled_questions
     from scathach.db.repository import get_due_topics
 
@@ -668,14 +660,6 @@ async def _run_review_mode(
         else:
             console.print("[green]Flash cards: nothing due.[/green]")
 
-    async def _long():
-        if get_scheduled_questions(conn, queue, limit=1, now=now,
-                                   min_difficulty=3, max_difficulty=6, topic_id=topic_id):
-            await run_super_review_session(conn, client, queue, timing_mode, threshold,
-                                           limit, hydra_enabled, on_failed, topic_id=topic_id)
-        else:
-            console.print("[green]Long answers: nothing due.[/green]")
-
     async def _topics():
         from scathach.cli.session_ui import handle_event, make_answer_provider
         from scathach.cli.topic_review_ui import run_topic_review
@@ -688,20 +672,13 @@ async def _run_review_mode(
     if mode == "flash-cards":
         await run_review_session(conn, client, queue, timing_mode, threshold,
                                  limit, on_failed, topic_id=topic_id)
-    elif mode == "long-answers":
-        await run_super_review_session(conn, client, queue, timing_mode, threshold,
-                                       limit, hydra_enabled, on_failed, topic_id=topic_id)
     elif mode == "topics":
         from scathach.cli.session_ui import handle_event, make_answer_provider
         from scathach.cli.topic_review_ui import run_topic_review
         await run_topic_review(conn, client, timing_mode, threshold,
                                True, handle_event, make_answer_provider)
-    elif mode == "all":
-        await _flash()
-        await _long()
     elif mode == "everything":
         await _flash()
-        await _long()
         await _topics()
 
 
@@ -709,41 +686,37 @@ async def _run_review_mode(
 def review(
     flash_cards: bool = typer.Option(False, "--flash-cards", "-f",
         help="FSRS review: levels 1–2 (flash cards)."),
-    long_answers: bool = typer.Option(False, "--long-answers", "-L",
-        help="FSRS review: levels 3–6 (long answers), worst performers first."),
     topics_mode: bool = typer.Option(False, "--topics", "-t",
         help="Quest for each topic due for scheduled review."),
-    all_fsrs: bool = typer.Option(False, "--all", "-a",
-        help="Run flash cards then long answers, skipping whichever has nothing due."),
     everything: bool = typer.Option(False, "--everything", "-e",
-        help="Run all three modes in sequence, skipping any with nothing due."),
+        help="Run flash cards then topics, skipping any with nothing due."),
     timed: Optional[bool] = typer.Option(
         None, "--timed/--untimed", help="Override default timing."),
     limit: int = typer.Option(
         20, "--limit", "-l", help="Max questions per FSRS mode."),
     hydra: Optional[bool] = typer.Option(
         None, "--hydra/--no-hydra",
-        help="Enable Hydra Protocol for long-answers and topics (overrides config)."),
+        help="Enable Hydra Protocol for topics (overrides config)."),
     on_fail: Optional[str] = typer.Option(
         None, "--on-fail",
         help="Behaviour on failed FSRS question: repeat | skip | choose."),
     topic_filter: Optional[str] = typer.Option(
         None, "--topic",
-        help="Restrict flash-cards and long-answers to a single topic."),
+        help="Restrict flash-cards to a single topic."),
 ) -> None:
     """Review due questions.
 
     Run with no mode flag for an interactive selector showing live due-counts.
 
-    Modes: [bold]--flash-cards[/bold]  [bold]--long-answers[/bold]  [bold]--topics[/bold]
-    Combos: [bold]--all[/bold] (flash+long)  [bold]--everything[/bold] (all three)"""
+    Modes: [bold]--flash-cards[/bold]  [bold]--topics[/bold]
+    Combo: [bold]--everything[/bold] (flash cards + topics)"""
     import asyncio
     from scathach.config import OnFailedReview
 
     _require_api_key()
 
     # Validate mutual exclusivity
-    active_flags = sum([flash_cards, long_answers, topics_mode, all_fsrs, everything])
+    active_flags = sum([flash_cards, topics_mode, everything])
     if active_flags > 1:
         console.print("[red]Specify only one mode flag at a time.[/red]")
         raise typer.Exit(code=1)
@@ -784,9 +757,7 @@ def review(
         else:
             mode = (
                 "flash-cards" if flash_cards else
-                "long-answers" if long_answers else
                 "topics" if topics_mode else
-                "all" if all_fsrs else
                 "everything"
             )
 

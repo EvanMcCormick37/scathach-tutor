@@ -36,6 +36,7 @@ async def run_topic_review(
     hydra_retry_parent: bool,
     handle_event,
     make_answer_provider,
+    topic: str | None = None,
 ) -> None:
     """
     Run a scheduled quest for every due topic.

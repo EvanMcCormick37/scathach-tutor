@@ -122,9 +122,8 @@ def _get_queue_stats(conn: sqlite3.Connection) -> list[dict]:
 
     result = []
 
-    for label, min_d, max_d in [("Flash Cards", 1, 2), ("Long Answers", 3, 6)]:
-        total, due_now, due_week = _range_counts(min_d, max_d)
-        result.append({"queue": label, "total": total, "due_now": due_now, "due_week": due_week})
+    total, due_now, due_week = _range_counts(1, 2)
+    result.append({"queue": "Flash Cards", "total": total, "due_now": due_now, "due_week": due_week})
 
     # Topics — active only (retired topics are excluded from scheduled review)
     total_topics = conn.execute("SELECT COUNT(*) FROM topics WHERE status = 'active'").fetchone()[0]

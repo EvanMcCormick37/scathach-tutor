@@ -46,7 +46,6 @@ By default, sessions open the source document automatically so you can refer to 
 Every question you clear is scheduled for future review via an FSRS-based algorithm. Initial stability is seeded from the question's difficulty level (a level-4 question starts at stability 4.0). Two independent queues track timed and untimed performance separately.
 
 - **Flash cards** (`review --flash-cards`) — levels 1–2, FSRS-scheduled.
-- **Long answers** (`review --long-answers`) — levels 3–6, worst performers first, Hydra on failure.
 - **Topic review** (`review --topics`) — full quest for each topic due for scheduled review.
 
 ### 7. Session persistence

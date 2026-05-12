@@ -442,6 +442,7 @@ class SessionRunner:
                         timed=effective_timed,
                         threshold=self.config.threshold,
                         document_content=_topic.content if _topic else None,
+                        ideal_answer=question.ideal_answer,
                     )
                 except ScoringError as exc:
                     self.state = SessionState.ABORTED

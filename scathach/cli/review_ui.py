@@ -84,11 +84,10 @@ async def run_review_session(
     session_id = secrets.token_hex(3)[:5]
     all_attempts: list[Attempt] = []
 
-    # Pre-load source paths for all topics (used by Ctrl+O in answer prompt)
-    _sp: dict[int, Optional[str]] = {
-        r["id"]: r["source_path"]
-        for r in conn.execute("SELECT id, source_path FROM topics").fetchall()
-    }
+    # Pre-load topic metadata for all topics
+    _topic_rows = conn.execute("SELECT id, name, source_path FROM topics").fetchall()
+    _sp: dict[int, Optional[str]] = {r["id"]: r["source_path"] for r in _topic_rows}
+    _topic_names: dict[int, str] = {r["id"]: r["name"] for r in _topic_rows}
 
     queue_list = list(questions)
     i = 0
@@ -98,9 +97,10 @@ async def run_review_session(
         i += 1
         dl = DifficultyLevel.from_int(question.difficulty)
         console.print()
+        topic_name = _topic_names.get(question.topic_id, "Unknown topic")
         console.print(Panel(
             question.body,
-            title=f"Review {i}/{len(queue_list)} — {_difficulty_stars(question.difficulty)} ({dl.label})",
+            title=f"Review {i}/{len(queue_list)} — {_difficulty_stars(question.difficulty)} ({dl.label}) · {topic_name}",
             border_style="blue",
         ))
 
